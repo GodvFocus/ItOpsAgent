@@ -4,7 +4,7 @@
 # 这里用最简单的 dataclass 做依赖聚合，由 main.py 在启动时手动组装
 #
 # @dataclass 相当于 Lombok 的 @Data / Java 17 的 record：
-#   自动生成 __init__(self, settings, minio, db, es, embedder)
+#   自动生成 __init__(self, settings, minio, db, milvus, embedder)
 #   省去手写构造函数
 """Shared worker dependencies (avoid circular imports)."""
 

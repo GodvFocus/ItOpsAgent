@@ -20,7 +20,7 @@ from fish_worker.consumer import StreamConsumer
 from fish_worker.db.mysql import DocumentMetadataRepository
 from fish_worker.deps import WorkerContext
 from fish_worker.health import start_health_server
-from fish_worker.storage.elasticsearch import ElasticsearchIndexer
+from fish_worker.storage.milvus import MilvusIndexer
 from fish_worker.storage.minio import DocObjectStore
 
 
@@ -45,7 +45,7 @@ def main() -> int:
         settings=settings,
         minio=DocObjectStore(settings),
         db=DocumentMetadataRepository(settings),
-        es=ElasticsearchIndexer(settings),
+        milvus=MilvusIndexer(settings),
         embedder=Embedder(settings),
     )
 
