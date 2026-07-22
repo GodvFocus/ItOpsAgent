@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from fish_worker.chunker.embedder import Embedder
 from fish_worker.config import Settings
 from fish_worker.db.mysql import DocumentMetadataRepository
-from fish_worker.storage.elasticsearch import ElasticsearchIndexer
+from fish_worker.storage.milvus import MilvusIndexer
 from fish_worker.storage.minio import DocObjectStore
 
 
@@ -24,5 +24,5 @@ class WorkerContext:
     settings: Settings
     minio: DocObjectStore
     db: DocumentMetadataRepository
-    es: ElasticsearchIndexer
+    milvus: MilvusIndexer
     embedder: Embedder

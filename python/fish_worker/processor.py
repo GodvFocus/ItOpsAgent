@@ -1,7 +1,7 @@
 # 单条文档的处理流水线 — 编排所有步骤
 #
 # 流程图（每条消息执行一次）：
-#   MinIO 下载 → Parser 解析 → Chunker 分块 → Embedder 嵌入 → ES 批量写入 → MySQL 更新状态
+#   MinIO 下载 → Parser 解析 → Chunker 分块 → Embedder 嵌入 → Milvus 批量写入 → MySQL 更新状态
 #
 # 异常分支：
 #   UnsupportedFileTypeError → FAILED（不支持的 MIME 类型）
@@ -11,7 +11,7 @@
 # 关键设计：
 #   tmp_root 传给 parser，避免重复创建临时目录
 #   finally 中 shutil.rmtree 清理临时文件（类似 Java finally 关闭 FileInputStream）
-"""Single-task ingest pipeline: MinIO → parse → chunk → embed → ES → MySQL."""
+"""Single-task ingest pipeline: MinIO → parse → chunk → embed → Milvus → MySQL."""
 
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ class IngestProcessor:
         self._settings = ctx.settings
         self._minio = ctx.minio
         self._db = ctx.db
-        self._es = ctx.es
+        self._milvus = ctx.milvus
         self._embedder = ctx.embedder
 
     def process(self, task: "IngestTask") -> None:
@@ -112,23 +112,25 @@ class IngestProcessor:
             # ---- 步骤 5: 批量调用 embedding API ----
             vectors = self._embedder.embed_batch([c.contextualized_text or c.text for c in chunks])
 
-            # ---- 步骤 6: 写入 ES ----
-            # scope_type=PRIVATE → fish-user-knowledge（个人文档）；PUBLIC → fish-public-knowledge（组织知识）
+            # ---- 步骤 6: 写入 Milvus ----
+            # scope_type=PRIVATE → itops_user_knowledge（个人文档）；PUBLIC → itops_public_knowledge（组织知识）
             scope_private = task.scope_type.upper() == "PRIVATE"
-            index_name = (
-                self._settings.knowledge_user_index if scope_private else self._settings.knowledge_public_index
+            collection_name = (
+                self._settings.milvus_user_knowledge_collection
+                if scope_private
+                else self._settings.milvus_public_knowledge_collection
             )
             file_type = self._file_type(task.file_name, content_type)
 
-            # 文档真实创建时间（写入 ES doc_created_at 供 recency 使用）；取不到则回退入库时间
+            # 文档真实创建时间（写入 Milvus doc_created_at 供 recency 使用）；取不到则回退入库时间
             created_dt = parser.created_at(content, task.file_name or "upload")
             doc_created_at_ms = int(created_dt.timestamp() * 1000) if created_dt else None
 
-            # 幂等：须在 index_name 确定后调用；同一 task_id 重处理前先清空该 doc_id 下旧切片
-            self._es.delete_by_doc_id(index_name, task.task_id)
+            # 幂等：须在 collection_name 确定后调用；同一 task_id 重处理前先清空该 doc_id 下旧切片
+            self._milvus.delete_by_doc_id(collection_name, task.task_id)
 
-            self._es.bulk_index_document_chunks(
-                index_name=index_name,
+            self._milvus.bulk_index_document_chunks(
+                collection_name=collection_name,
                 task_id=task.task_id,
                 scope_private=scope_private,
                 user_id=task.user_id if scope_private else None,
@@ -136,7 +138,7 @@ class IngestProcessor:
                 file_type=file_type,
                 chunks=chunks,
                 vectors=vectors,
-                batch_size=self._settings.fish_worker_es_batch_size,
+                batch_size=self._settings.milvus_batch_size,
                 default_authority=(
                     self._settings.fish_rag_authority_private
                     if scope_private
@@ -148,11 +150,11 @@ class IngestProcessor:
             # ---- 步骤 7: 更新成功 ----
             # 先翻 ready=True，再 CAS SUCCESS：mark_doc_ready 失败会抛出（内部重试耗尽），
             # 由 process() 的 except 把任务转到 FAILED（可重传/补偿），绝不静默 SUCCESS 但 ready=false 永久不可见
-            self._es.mark_doc_ready(index_name, task.task_id)
+            self._milvus.mark_doc_ready(collection_name, task.task_id)
             success = self._mark_success(
                 task.task_id,
                 chunk_count=len(chunks),
-                cleanup=lambda: self._es.delete_by_doc_id(index_name, task.task_id),
+                cleanup=lambda: self._milvus.delete_by_doc_id(collection_name, task.task_id),
             )
             if success:
                 log.info("task_id=%s SUCCESS chunks=%s", task.task_id, len(chunks))
