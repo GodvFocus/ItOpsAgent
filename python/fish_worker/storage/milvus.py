@@ -21,6 +21,11 @@ log = logging.getLogger(__name__)
 _BGE_M3_DIM = 1024
 
 
+def _escape_milvus_expr(val: str) -> str:
+    """转义 Milvus 表达式中字符串值的特殊字符，防止注入/语法错误。"""
+    return val.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def _ensure_collection(name: str) -> Collection:
     """确保 Collection 存在，不存在则创建（含 BM25 analyzer 的 content 字段 + dense vector 字段）。"""
     if utility.has_collection(name):
@@ -74,10 +79,12 @@ class MilvusIndexer:
         try:
             col = _ensure_collection(collection_name)
             col.load()
-            col.delete(expr=f'doc_id == "{doc_id}"')
+            col.delete(expr=f'doc_id == "{_escape_milvus_expr(doc_id)}"')
             log.debug("Milvus delete_by_doc_id doc_id=%s collection=%s", doc_id, collection_name)
         except Exception as e:
-            log.warning("Milvus delete_by_doc_id failed doc_id=%s collection=%s: %s", doc_id, collection_name, e)
+            raise RuntimeError(
+                f"Milvus delete_by_doc_id failed doc_id={doc_id} collection={collection_name}: {e}"
+            ) from e
 
     def bulk_index_document_chunks(
         self,
@@ -133,27 +140,31 @@ class MilvusIndexer:
                 log.error("Milvus insert failed at offset %s: %s", i, e)
                 raise RuntimeError(f"Milvus insert failed at offset {i}: {e!r}")
 
+        # flush 确保数据持久化并对后续查询可见
+        col.flush()
+        log.debug("Milvus flushed collection=%s after inserting %s rows", collection_name, len(rows))
+
     def mark_doc_ready(self, collection_name: str, doc_id: str) -> None:
         """全部 chunk 写入完成后，翻 ready=True 让检索可见。
 
-        Milvus insert 立即可见，这里只需 upsert ready 字段。
+        每次重试都重新 query，避免因 flush 延迟导致 query 返回空结果。
         重试逻辑与旧 ES 实现一致，耗尽则抛出让任务留在可恢复态。
         """
         max_attempts = max(1, int(getattr(self._s, "milvus_mark_ready_max_attempts", 3)))
         backoff_base = float(getattr(self._s, "milvus_mark_ready_backoff_base", 0.5))
 
         col = _ensure_collection(collection_name)
-        col.load()
 
-        # 查询该 doc 所有 chunk 的 id
-        results = col.query(
-            expr=f'doc_id == "{doc_id}"',
-            output_fields=["id", "ready"],
-        )
-
+        escaped_doc_id = _escape_milvus_expr(doc_id)
         last_exc: Exception | None = None
         for attempt in range(1, max_attempts + 1):
             try:
+                col.load()
+                # 每次重试都重新查询，确保拿到最新数据
+                results = col.query(
+                    expr=f'doc_id == "{escaped_doc_id}"',
+                    output_fields=["id", "ready"],
+                )
                 for r in results:
                     r["ready"] = True
                 if results:
