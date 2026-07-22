@@ -54,10 +54,11 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-redis</artifactId>
         </dependency>
-        <!-- Elasticsearch 集成：用于关键词检索与向量检索（SB 3.x 命名为 data-elasticsearch） -->
+        <!-- Milvus 向量数据库 SDK：替代 Elasticsearch 提供向量检索能力 -->
         <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-data-elasticsearch</artifactId>
+            <groupId>io.milvus</groupId>
+            <artifactId>milvus-sdk-java</artifactId>
+            <version>2.4.7</version>
         </dependency>
         <!-- Web MVC：提供 REST 接口与流式响应能力（SB 3.x 命名为 web） -->
         <dependency>
