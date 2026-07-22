@@ -54,12 +54,21 @@ class Settings(BaseSettings):
     rustfs_secret_key: str = Field(default="", validation_alias="RUSTFS_SECRET_KEY")
     rustfs_bucket_docs: str = Field(default="itops-docs", validation_alias="RUSTFS_BUCKET_DOCS")
 
-    # ---- Elasticsearch ----
-    elasticsearch_uris: str = Field(
-        default="http://localhost:9200", validation_alias="ELASTICSEARCH_URIS"
+    # ---- Milvus ----
+    milvus_uri: str = Field(default="milvus-standalone:19530", validation_alias="MILVUS_URI")
+    milvus_token: str = Field(default="", validation_alias="MILVUS_TOKEN")
+    milvus_user_knowledge_collection: str = Field(
+        default="itops_user_knowledge", validation_alias="MILVUS_USER_KNOWLEDGE_COLLECTION"
     )
-    elasticsearch_username: str = Field(default="", validation_alias="ELASTICSEARCH_USERNAME")
-    elasticsearch_password: str = Field(default="", validation_alias="ELASTICSEARCH_PASSWORD")
+    milvus_public_knowledge_collection: str = Field(
+        default="itops_public_knowledge", validation_alias="MILVUS_PUBLIC_KNOWLEDGE_COLLECTION"
+    )
+    milvus_user_memory_collection: str = Field(
+        default="itops_user_memory", validation_alias="MILVUS_USER_MEMORY_COLLECTION"
+    )
+    milvus_batch_size: int = Field(default=100, validation_alias="MILVUS_BATCH_SIZE")
+    milvus_mark_ready_max_attempts: int = Field(default=3, validation_alias="FISH_WORKER_MARK_READY_MAX_ATTEMPTS")
+    milvus_mark_ready_backoff_base: float = Field(default=0.5, validation_alias="FISH_WORKER_MARK_READY_BACKOFF_BASE")
 
     # ---- MySQL（优先解析 DB_URL，否则用 DB_HOST/PORT/NAME 组装）----
     db_url: str | None = Field(default=None, validation_alias="DB_URL")
@@ -69,17 +78,8 @@ class Settings(BaseSettings):
     db_username: str = Field(default="root", validation_alias="DB_USERNAME")
     db_password: str = Field(default="", validation_alias="DB_PASSWORD")
 
-    # ---- Redis Stream key / ES 索引名 ----
+    # ---- Redis Stream key ----
     fish_doc_ingest_stream: str = Field(default="fish:doc:ingest", validation_alias="FISH_DOC_INGEST_STREAM")
-    # fish-user-memory：仅 Java 写入对话事实（source_type=chat）；Worker 不再写入此索引
-    memory_user_index: str = Field(default="fish-user-memory", validation_alias="MEMORY_USER_INDEX")
-    # fish-user-knowledge：用户上传文档切片（PRIVATE）；与 fish.knowledge.user-knowledge-index-name 对齐
-    knowledge_user_index: str = Field(
-        default="fish-user-knowledge", validation_alias="KNOWLEDGE_USER_INDEX"
-    )
-    knowledge_public_index: str = Field(
-        default="fish-public-knowledge", validation_alias="KNOWLEDGE_PUBLIC_INDEX"
-    )
 
     # ---- LLM Embedding（与 fish.llm.embedding 对齐）----
     fish_llm_embedding_provider: str = Field(
@@ -90,7 +90,7 @@ class Settings(BaseSettings):
         default="text-embedding-v2", validation_alias="DASHSCOPE_EMBEDDING_MODEL"
     )
     dashscope_embedding_dimensions: int = Field(
-        default=1536, validation_alias="DASHSCOPE_EMBEDDING_DIMENSIONS"
+        default=1024, validation_alias="DASHSCOPE_EMBEDDING_DIMENSIONS"
     )
     ollama_base_url: str = Field(default="http://localhost:11434", validation_alias="OLLAMA_BASE_URL")
     ollama_embedding_model: str = Field(
@@ -110,7 +110,6 @@ class Settings(BaseSettings):
     fish_worker_table_max_tokens: int = Field(
         default=1024, validation_alias="FISH_WORKER_TABLE_MAX_TOKENS"
     )
-    fish_worker_es_batch_size: int = Field(default=20, validation_alias="FISH_WORKER_ES_BATCH_SIZE")
     fish_worker_dashscope_embed_batch: int = Field(
         default=25, validation_alias="FISH_WORKER_DASHSCOPE_EMBED_BATCH"
     )
@@ -127,13 +126,6 @@ class Settings(BaseSettings):
     )
     fish_worker_embed_backoff_max: float = Field(
         default=30.0, validation_alias="FISH_WORKER_EMBED_BACKOFF_MAX"
-    )
-    # B2：mark_doc_ready 翻 ready 的重试（ES 抖动自愈；耗尽则抛出，让任务留在可恢复态而非静默 SUCCESS）
-    fish_worker_mark_ready_max_attempts: int = Field(
-        default=3, validation_alias="FISH_WORKER_MARK_READY_MAX_ATTEMPTS"
-    )
-    fish_worker_mark_ready_backoff_base: float = Field(
-        default=0.5, validation_alias="FISH_WORKER_MARK_READY_BACKOFF_BASE"
     )
     fish_rag_contextual_indexing_enabled: bool = Field(
         default=True, validation_alias="FISH_RAG_CONTEXTUAL_INDEXING_ENABLED"
@@ -182,12 +174,6 @@ class Settings(BaseSettings):
             "charset": "utf8mb4",
             "cursorclass": pymysql.cursors.DictCursor,  # 查询结果返回 dict（类似 MyBatis 的 Map 结果集）
         }
-
-    @cached_property
-    def es_hosts(self) -> list[str]:
-        """ELASTICSEARCH_URIS 支持逗号分隔多个节点，如 'http://es1:9200,http://es2:9200'."""
-        parts = [p.strip() for p in self.elasticsearch_uris.split(",") if p.strip()]
-        return parts or ["http://localhost:9200"]
 
     @cached_property
     def minio_endpoint_secure(self) -> tuple[str, bool]:
