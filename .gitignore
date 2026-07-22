@@ -1,0 +1,61 @@
+HELP.md
+target/
+.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### VS Code ###
+.vscode/
+
+### cursor ###
+.cursor/
+
+### claude ###
+.claude
+
+data/history
+
+### 敏感本地配置 ###
+src/main/resources/application-dev.yml
+.env
+temp/
+.superpowers/
+.docs/
+document/
+
+### pnpm 本地缓存 ###
+.pnpm-store/
+
+### 工具生成的文件索引 ###
+**/java_files.txt
+
+### 前端自动生成类型（每次 build 重新生成） ###
+frontend/auto-imports.d.ts
+frontend/components.d.ts
+
+

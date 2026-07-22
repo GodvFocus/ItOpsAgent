@@ -1,0 +1,403 @@
+# ═══════════════════════════════════════════════════════════════
+# Fish-Agent  Application Configuration
+# ═══════════════════════════════════════════════════════════════
+
+# ── Server ───────────────────────────────────────────────────
+server:
+  port: 8080
+
+# ── Spring Boot ──────────────────────────────────────────────
+spring:
+  profiles:
+    # 默认 dev：自动加载 application-dev.yml（敏感凭据，gitignore）
+    # 生产：SPRING_PROFILES_ACTIVE=prod
+    active: ${SPRING_PROFILES_ACTIVE:dev}
+
+  application:
+    name: Fish-Agent
+
+  threads:
+    virtual: true
+
+  output:
+    ansi:
+      enabled: always
+
+  # 排除不需要的 OpenAI 自动配置（DeepSeek 仅需 Chat）
+  autoconfigure:
+    exclude:
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiAudioSpeechAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiAudioTranscriptionAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiEmbeddingAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiImageAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiModerationAutoConfiguration
+
+  # ── 数据源 ────────────────────────────────────────────────
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: ${DB_URL:jdbc:mysql://localhost:3306/itops_agent?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false}
+    username: ${DB_USERNAME:root}
+    password: ${DB_PASSWORD:}
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DATABASE:2}
+
+  elasticsearch:
+    uris: ${ELASTICSEARCH_URIS:http://localhost:9200}
+    username: ${ELASTICSEARCH_USERNAME:}
+    password: ${ELASTICSEARCH_PASSWORD:}
+
+  # ── AI 模型 ────────────────────────────────────────────────
+  ai:
+    chat:
+      observations:
+        log: false
+    # ChatModel 自动配置选择：dashscope | ollama | openai
+    # 若未在任意 PropertySource 中设置 spring.ai.model.chat，
+    # 由 FishLlmEnvironmentPostProcessor 根据 fish.llm.chat-provider 补全
+    dashscope:
+      api-key: sk-ws-H.EHDEDLP.EPQU.MEQCIE2d8sL0E6ch9Kp6_P9xPzPvCOJbCji5Y9t0jXHkNkWLAiBcPuKP6pj8rhaGXBa-rgSIwXKRS1dWm83OhSFaFmTVUA
+      # 对话模型名：显式配置以匹配 fish.llm.model-context-overrides（qwen-plus→131072）。
+      # 不配置时走 starter 内置默认，resolveActiveChatModelName 读不到，预算覆盖不生效。
+      chat:
+        options:
+          model: ${DASHSCOPE_CHAT_MODEL:qwen-plus}
+      embedding:
+        options:
+          model: ${DASHSCOPE_EMBEDDING_MODEL:text-embedding-v2}
+          dimensions: ${DASHSCOPE_EMBEDDING_DIMENSIONS:1536}
+
+    ollama:
+      base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
+      chat:
+        options:
+          model: ${OLLAMA_CHAT_MODEL:qwen2.5:7b}
+
+    openai:
+      base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
+      api-key: ${DEEPSEEK_API_KEY:}
+      chat:
+        options:
+          # deepseek-chat（V3）将于 2026/07/24 弃用，已切换 deepseek-v4-flash（DeepSeek-V4-Flash）。
+          # 显式关闭思考模式：保持与旧 deepseek-chat 一致的非思考行为，并规避 V4 思考模式与
+          # tool calling 的已知冲突（reasoning_content 与 function calling 协同异常）。
+          # thinking 经 OpenAiChatOptions.extraBody 平铺到请求体顶层（DeepSeek 要求的位置）。
+          model: ${DEEPSEEK_CHAT_MODEL:deepseek-v4-flash}
+          extra-body:
+            thinking:
+              type: disabled
+
+  # ── Web / 邮件 ─────────────────────────────────────────────
+  servlet:
+    multipart:
+      max-file-size: ${FISH_KNOWLEDGE_MAX_FILE_SIZE:50MB}
+      max-request-size: ${FISH_KNOWLEDGE_MAX_REQUEST_SIZE:55MB}
+
+  mail:
+    host: ${MAIL_HOST:}
+    port: ${MAIL_PORT:465}
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
+    properties:
+      mail:
+        smtp:
+          auth: true
+          ssl:
+            enable: true
+          starttls:
+            enable: true
+
+# ── MyBatis-Plus ─────────────────────────────────────────────
+mybatis-plus:
+  mapper-locations: classpath*:mapper/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+
+# ── Management / Observability ───────────────────────────────
+management:
+  server:
+    port: 9090
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+        fish.chat.turn.duration: true
+        fish.rag.recall.duration: true
+        gen_ai.client.operation.duration: true
+      percentiles:
+        http.server.requests: 0.5,0.95,0.99
+        fish.chat.turn.duration: 0.5,0.95,0.99
+        fish.rag.recall.duration: 0.5,0.95,0.99
+        gen_ai.client.operation.duration: 0.5,0.95,0.99
+# ── Logging ──────────────────────────────────────────────────
+logging:
+  level:
+    reactor.netty.http.client: DEBUG
+    com.yuyu.fishagent:
+      agent: debug
+      auth: debug
+      chat: debug
+      memory: debug
+      rag: debug
+
+# ── Resilience4j 熔断器 ────────────────────────────────────────
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        failure-rate-threshold: 50
+        slow-call-rate-threshold: 80
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        wait-duration-in-open-state: 30s
+        permitted-number-of-calls-in-half-open-state: 3
+        automatic-transition-from-open-to-half-open-enabled: true
+    instances:
+      llm:
+        base-config: default
+        slow-call-duration-threshold: 15s
+        wait-duration-in-open-state: 60s
+      es-text:
+        base-config: default
+        slow-call-duration-threshold: 3s
+        wait-duration-in-open-state: 20s
+      es-vector:
+        base-config: default
+        slow-call-duration-threshold: 5s
+        wait-duration-in-open-state: 30s
+      rerank:
+        base-config: default
+        slow-call-duration-threshold: 5s
+        wait-duration-in-open-state: 30s
+
+# ═══════════════════════════════════════════════════════════════
+# Fish-Agent 业务配置
+# ═══════════════════════════════════════════════════════════════
+fish:
+
+  # ── 模型路由 ────────────────────────────────────────────────
+  llm:
+    # DASHSCOPE | OLLAMA | DEEPSEEK
+    chat-provider: ${FISH_LLM_CHAT_PROVIDER:DEEPSEEK}
+    # Token 预算管理：本地估算输入成本，防止上下文静默超窗
+    context-window-tokens: ${FISH_LLM_CONTEXT_WINDOW_TOKENS:32768}
+    output-reserve-tokens: ${FISH_LLM_OUTPUT_RESERVE_TOKENS:2048}
+    safety-margin-ratio: ${FISH_LLM_SAFETY_MARGIN_RATIO:0.2}
+    # V4-Flash 原生 1M 上下文（284B 总参 / 13B 激活 MoE，OpenAI 兼容，无需特殊开关）。
+    # 注意：官方与社区反馈 ~300K 之后质量/延迟下降，实际打包目标由 safety-margin-ratio 收敛
+    # （见 ContextBudgetAllocator），1M 此处仅作为「模型允许的硬上限」。
+    model-context-overrides:
+      deepseek-v4-flash: 1048576
+      qwen-plus: 131072
+      qwen-turbo: 131072
+      qwen3-235b-a22b: 131072
+    # 嵌入（仅 DASHSCOPE / OLLAMA，DeepSeek 不支持）
+    embedding:
+      provider: ${FISH_LLM_EMBEDDING_PROVIDER:DASHSCOPE}
+
+  # ── Agent 行为 ─────────────────────────────────────────────
+  agent:
+    max-iterations: 10
+    history-dir: data/history
+    sandbox-dir: data/sandbox
+    instruction: |-
+      你是一个名为 Fish 的智能助手，擅长理解用户意图并合理使用工具来解决问题。
+      回答时请保持简洁、准确；当工具返回结果后再总结给用户。
+      若消息中出现可供参考的用户背景信息，请直接据此作答，像一直了解对方一样自然承接，不要先否认「不记得」再引用背景。
+      勿在面向用户的句子中提及：长期记忆、记忆片段、检索结果、系统提示、上下文块、RAG、embedding 等技术或来源措辞；也不要用「根据你之前提供的…」「根据系统/上文…」这类元叙述。
+      同一条系统消息开头的「当前会话时间」表示应用服务器此刻的本地时间；判断「今天、现在、最近」时以它为锚，不要凭训练直觉或搜索结果臆测当前公历日期。
+      网络搜索返回的日期多为新闻发稿/事件发生时间或站点元数据，不等于「此刻」；不同搜索源索引新旧可能不一致，不要仅因某条摘要年份与直觉不符就断言真实日期。需要与用户时区对齐或二次确认时刻时，可调用工具 get_current_datetime（可传 IANA 时区）。
+
+  # ── 记忆系统 ───────────────────────────────────────────────
+  memory:
+    short-term-window-size: 20
+    summary-trigger-threshold: 30
+    redis-key-prefix: fish:memory
+    short-term-ttl-days: 30
+    long-term-enabled: ${MEMORY_LONG_TERM_ENABLED:true}
+    long-term-index-name: ${MEMORY_USER_INDEX:fish-user-memory}
+    embedding-dimensions: ${DASHSCOPE_EMBEDDING_DIMENSIONS:1536}
+    # 长期事实写入前查重：避免同一用户反复沉淀高度相似事实
+    dedup:
+      enabled: ${FISH_MEMORY_DEDUP_ENABLED:true}
+      similarity-threshold: ${FISH_MEMORY_DEDUP_THRESHOLD:0.92}
+      k: 3
+      num-candidates: 20
+    conflict:
+      enabled: ${FISH_MEMORY_CONFLICT_ENABLED:true}
+      similar-fact-k: ${FISH_MEMORY_CONFLICT_SIMILAR_FACT_K:5}
+    # 记忆压缩 / 长期事实抽取专用 Chat（DEEPSEEK 下为独立 OpenAiChatModel）
+    chat:
+      enabled: ${MEMORY_CHAT_ENABLED:true}
+      model: ${MEMORY_CHAT_MODEL:deepseek-v4-flash}
+      temperature: ${MEMORY_CHAT_TEMPERATURE:0.1}
+
+  # ── RAG 检索增强 ───────────────────────────────────────────
+  rag:
+    enabled: ${FISH_RAG_ENABLED:true}
+    rewrite-enabled: ${FISH_RAG_REWRITE_ENABLED:false}
+    # 查询重写（仅 rewrite-enabled=true 时生效）：NONE | CHAT_MODEL
+    rewrite-provider: CHAT_MODEL
+    rewrite-temperature: 0.1
+    rewrite-max-tokens: 256
+    rewrite-max-chars: 512
+    # 多查询召回（v3.4 扩大候选池）
+    recall:
+      max-sub-queries: 12
+      min-token-chars: 1
+      per-subquery-size: 10
+      vector-leg-enabled: true
+      knn-num-candidates: 120
+    # 结果渲染上限
+    render:
+      max-injected-facts: 8
+      max-injected-chars: 4000
+    # RRF 分数融合（统一 BM25 / cosine 排名）
+    fusion:
+      enabled: ${FISH_RAG_FUSION_ENABLED:true}
+      rrf-k: 60
+      candidate-pool-size: 50
+    # DashScope Cross-Encoder 精排（复用 DASHSCOPE_API_KEY，无 Key 自动降级）
+    rerank:
+      enabled: ${FISH_RAG_RERANK_ENABLED:true}
+      model: ${FISH_RAG_RERANK_MODEL:qwen3-rerank}
+      top-n: 8
+      timeout-seconds: 5
+      fallback-on-error: true
+      base-url: https://dashscope.aliyuncs.com
+      api-key: ${DASHSCOPE_API_KEY:}
+    # 查询理解：LLM 语义分解 / TOKEN 词级扩展 / IDENTITY 原句
+    expand:
+      enabled: ${FISH_RAG_EXPAND_ENABLED:true}
+      strategy: ${FISH_RAG_EXPAND_STRATEGY:LLM}
+      max-queries: 4
+      temperature: 0.3
+      timeout-ms: 3000
+      min-query-chars: 5
+      max-query-chars: 200
+    # HyDE：生成假设性答案，仅用于向量召回腿；默认关闭
+    hyde:
+      enabled: ${FISH_RAG_HYDE_ENABLED:false}
+      max-tokens: 300
+      temperature: 0.5
+      timeout-ms: 3000
+    # RAG 质量追踪：异步写 ES，便于观察召回、精排与注入效果
+    tracing:
+      enabled: ${FISH_RAG_TRACING_ENABLED:true}
+      index-name: ${FISH_RAG_TRACE_INDEX:fish-rag-trace}
+      async: true
+      sample-rate: ${FISH_RAG_TRACING_SAMPLE_RATE:1.0}
+    provenance:
+      enabled: ${FISH_RAG_PROVENANCE_ENABLED:true}
+      authority-alpha: ${FISH_RAG_PROVENANCE_AUTHORITY_ALPHA:0.15}
+      recency-beta: ${FISH_RAG_PROVENANCE_RECENCY_BETA:0.10}
+      recency-half-life-days: ${FISH_RAG_PROVENANCE_RECENCY_HALF_LIFE_DAYS:180}
+    expand-neighbors:
+      enabled: ${FISH_RAG_EXPAND_NEIGHBORS_ENABLED:true}
+      neighbor-span: ${FISH_RAG_EXPAND_NEIGHBORS_SPAN:1}
+    contextual-indexing:
+      enabled: ${FISH_RAG_CONTEXTUAL_INDEXING_ENABLED:true}
+      authority-private: ${FISH_RAG_AUTHORITY_PRIVATE:0.7}
+      authority-public: ${FISH_RAG_AUTHORITY_PUBLIC:1.0}
+
+  # ── Eval / Trace ───────────────────────────────────────────
+  eval:
+    summary:
+      live-enabled: ${FISH_EVAL_SUMMARY_LIVE_ENABLED:false}
+  trace:
+    enabled: ${FISH_TRACE_ENABLED:true}
+    es-index: ${FISH_TRACE_ES_INDEX:fish-trace}
+    doc-max-chars: ${FISH_TRACE_DOC_MAX_CHARS:50000}
+    sample-rate: ${FISH_TRACE_SAMPLE_RATE:1.0}
+
+  # ── v6.2 工具结果治理：A 单结果预算 / B 摘要 / C scratch 检索式注入 ──
+  tool:
+    result:
+      budget-tokens: ${FISH_TOOL_RESULT_BUDGET_TOKENS:4096}
+      summarize-threshold-tokens: ${FISH_TOOL_RESULT_SUMMARIZE_THRESHOLD_TOKENS:8192}
+      summarize-enabled: ${FISH_TOOL_RESULT_SUMMARIZE_ENABLED:true}
+      scratch-large-threshold-tokens: ${FISH_TOOL_RESULT_SCRATCH_LARGE_THRESHOLD_TOKENS:20480}
+      scratch-enabled: ${FISH_TOOL_RESULT_SCRATCH_ENABLED:true}
+      scratch-search-max-calls: ${FISH_TOOL_RESULT_SCRATCH_SEARCH_MAX_CALLS:5}
+      scratch-chunk-tokens: ${FISH_TOOL_RESULT_SCRATCH_CHUNK_TOKENS:900}
+      scratch-inject-top-k: ${FISH_TOOL_RESULT_SCRATCH_INJECT_TOP_K:3}
+      scratch-ttl: ${FISH_TOOL_RESULT_SCRATCH_TTL:30m}
+      # 窗口比例自缩放（方案 B）：有效预算 = max(上面的绝对下限, 当前窗口×分数)。
+      # 1M 窗口下 budget≈31K / summarize≈126K / scratch≈262K → 正常网页/搜索结果放行不治理，
+      # 摘要/scratch 退化为只对付真正巨型结果；关闭或窗口未知时退回绝对下限（小窗模型不回退）。
+      window-relative:
+        enabled: ${FISH_TOOL_RESULT_WINDOW_RELATIVE_ENABLED:true}
+        budget-fraction: ${FISH_TOOL_RESULT_BUDGET_FRACTION:0.03}
+        summarize-fraction: ${FISH_TOOL_RESULT_SUMMARIZE_FRACTION:0.12}
+        scratch-fraction: ${FISH_TOOL_RESULT_SCRATCH_FRACTION:0.25}
+
+  # ── 外部工具 ───────────────────────────────────────────────
+  tools:
+    # 工具结果治理：统一在 ToolRegistry 做智能截断和长结果提示
+    max-result-chars: 4000
+    hint-threshold-chars: 1500
+    overrides:
+      web_fetch: 6000
+      file_read: 8000
+      web_search: 3000
+    # Tavily 搜索：https://docs.tavily.com/documentation/api-reference/endpoint/search
+    tavily:
+      api-key: ${TAVILY_API_KEY:}
+      base-url: https://api.tavily.com
+      max-results: 5
+    # 博查 AI 搜索：https://open.bochaai.com/
+    bocha:
+      api-key: ${BOCHA_API_KEY:}
+      base-url: https://api.bochaai.com
+      count: 5
+    # 高德地图 API：https://lbs.amap.com/api/webservice/guide/api/georegeo (地理编码)
+    #                https://lbs.amap.com/api/webservice/guide/api-advanced/weatherinfo (天气)
+    amap:
+      key: ${AMAP_KEY:}
+      base-url: https://restapi.amap.com
+
+  # ── RustFS 对象存储（S3 兼容） ──────────────────────────────
+  rustfs:
+    enabled: ${RUSTFS_ENABLED:true}
+    endpoint: ${RUSTFS_ENDPOINT:http://localhost:9000}
+    access-key: ${RUSTFS_ACCESS_KEY:}
+    secret-key: ${RUSTFS_SECRET_KEY:}
+    bucket-chat: ${RUSTFS_BUCKET_CHAT:itops-chat}
+    bucket-docs: ${RUSTFS_BUCKET_DOCS:itops-docs}
+
+  # ── 对话限流（Redis Lua：令牌桶 + SSE 并发） ────────────────
+  rate-limit:
+    enabled: ${FISH_RATE_LIMIT_ENABLED:true}
+    token-bucket:
+      capacity: ${FISH_RATE_LIMIT_TOKEN_BUCKET_CAPACITY:60}
+      refill-rate: ${FISH_RATE_LIMIT_TOKEN_BUCKET_REFILL_RATE:1.0}
+      key-ttl: ${FISH_RATE_LIMIT_TOKEN_BUCKET_KEY_TTL:120}
+    sse-concurrent:
+      max-connections: ${FISH_RATE_LIMIT_SSE_MAX_CONNECTIONS:2}
+      key-ttl: ${FISH_RATE_LIMIT_SSE_KEY_TTL:300}
+
+  # ── 登录鉴权（Session 存 Redis，X-Auth-Token 头） ──────────
+  auth:
+    session-ttl-seconds: ${AUTH_SESSION_TTL:86400}
+    white-list: /api/auth/login,/api/auth/register,/api/auth/logout
+
+  # ── 知识库 ─────────────────────────────────────────────────
+  knowledge:
+    public-index-name: ${KNOWLEDGE_PUBLIC_INDEX:fish-public-knowledge}
+    user-knowledge-index-name: ${KNOWLEDGE_USER_INDEX:fish-user-knowledge}
+    document-ingest-stream-key: ${FISH_DOC_INGEST_STREAM:fish:doc:ingest}
+    compensation:
+      enabled: ${KNOWLEDGE_COMPENSATION_ENABLED:true}
+      timeout-minutes: ${KNOWLEDGE_COMPENSATION_TIMEOUT_MINUTES:10}
