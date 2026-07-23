@@ -191,8 +191,8 @@ public class RagProperties {
         /** 质量追踪开关。 */
         private boolean enabled = true;
 
-        /** 追踪日志 ES 索引名。 */
-        private String indexName = "fish-rag-trace";
+        /** 追踪日志文件存储目录。 */
+        private String storageDir = "data/rag-traces";
 
         /** 是否异步写入，不阻塞对话主流程。 */
         private boolean async = true;

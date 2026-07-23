@@ -48,7 +48,6 @@ public class CardRelationDiscoveryService {
     private final CardKeywordMapper cardKeywordMapper;
     private final KeywordMapper keywordMapper;
     private final KnowledgeCardService knowledgeCardService;
-    private final KnowledgeCardEsSyncService esSyncService;
 
     public DiscoverResult discoverRelations(Long userId) {
         if (userId == null) {
@@ -207,24 +206,12 @@ public class CardRelationDiscoveryService {
         return candidates;
     }
 
+    /**
+     * ES → Milvus 迁移后 embedding 信号暂不可用，后续通过 Milvus ANN + MySQL 混合检索恢复。
+     */
     private Map<String, Float> loadEmbeddingScores(Long userId, Set<CardPair> candidates, Map<Long, KnowledgeCard> cardById) {
-        Map<Long, Set<Long>> wanted = new HashMap<>();
-        for (CardPair pair : candidates) {
-            wanted.computeIfAbsent(pair.a(), id -> new HashSet<>()).add(pair.b());
-        }
-        Map<String, Float> scores = new HashMap<>();
-        for (Map.Entry<Long, Set<Long>> entry : wanted.entrySet()) {
-            KnowledgeCard card = cardById.get(entry.getKey());
-            if (card == null) {
-                continue;
-            }
-            for (KnowledgeCardEsSyncService.CardVectorHit hit : esSyncService.findSimilarConfirmed(userId, card, 30)) {
-                if (entry.getValue().contains(hit.cardId())) {
-                    scores.put(CardPair.of(card.getId(), hit.cardId()).key(), Math.max(0.0f, Math.min(1.0f, hit.score())));
-                }
-            }
-        }
-        return scores;
+        // TODO: ES → Milvus 迁移后恢复 embedding 信号
+        return Map.of();
     }
 
     private List<String> buildReasons(KnowledgeCard a, KnowledgeCard b,

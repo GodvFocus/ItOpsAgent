@@ -79,7 +79,7 @@ class ChatServiceObservabilityTest {
                 new FishLlmProperties(),
                 activeChatModelContext,
                 new com.yuyu.fishagent.common.trace.TraceCollector(new com.yuyu.fishagent.common.trace.TraceProperties()),
-                mock(com.yuyu.fishagent.common.trace.TraceEsWriter.class),
+                mock(com.yuyu.fishagent.common.trace.TraceFileWriter.class),
                 mock(com.yuyu.fishagent.agent.tool.result.ToolResultGovernor.class));
 
         SseEmitter emitter = mock(SseEmitter.class);

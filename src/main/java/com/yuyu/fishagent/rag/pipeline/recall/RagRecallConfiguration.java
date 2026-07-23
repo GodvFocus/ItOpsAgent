@@ -17,14 +17,14 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.data.elasticsearch.core.ElasticsearchOperations;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * 召回与编排装配：虚拟线程池、四路 {@link RagRecall.DocumentSearcher}（用户记忆 / 用户知识库 / 知识卡片 / 公共知识）、
+ * 召回与编排装配：虚拟线程池、三路 Milvus {@link RagRecall.DocumentSearcher}（用户记忆 / 用户知识库 / 公共知识）、
  * 对 Chat 暴露的 {@link RagRecall.Augmentation}。
+ * <p>知识卡片搜索器（原 ES UserKnowledgeCardSearcher）已移除，后续通过 MySQL LIKE + Milvus 混合检索替代。</p>
  */
 @Configuration
 public class RagRecallConfiguration {
@@ -52,11 +52,9 @@ public class RagRecallConfiguration {
             KnowledgeProperties knowledgeProperties,
             RagQueryRewrite.QueryRewriter queryRewriter,
             RagQueryExpand.SubQueryExpander subQueryExpander,
-            UserMemoryElasticsearchSearcher userMemoryElasticsearchSearcher,
-            UserKnowledgeElasticsearchSearcher userKnowledgeElasticsearchSearcher,
-            UserKnowledgeCardSearcher userKnowledgeCardSearcher,
-            PublicKnowledgeElasticsearchSearcher publicKnowledgeElasticsearchSearcher,
-            ObjectProvider<ElasticsearchOperations> operationsProvider,
+            UserMemoryMilvusSearcher userMemoryMilvusSearcher,
+            UserKnowledgeMilvusSearcher userKnowledgeMilvusSearcher,
+            PublicKnowledgeMilvusSearcher publicKnowledgeMilvusSearcher,
             @Qualifier("ragRecallExecutor") ExecutorService ragRecallExecutor,
             RagReranker ragReranker,
             RagHydeService ragHydeService,
@@ -70,11 +68,10 @@ public class RagRecallConfiguration {
                 knowledgeProperties,
                 queryRewriter,
                 subQueryExpander,
-                userMemoryElasticsearchSearcher,
-                userKnowledgeElasticsearchSearcher,
-                userKnowledgeCardSearcher,
-                publicKnowledgeElasticsearchSearcher,
-                operationsProvider,
+                userMemoryMilvusSearcher,
+                userKnowledgeMilvusSearcher,
+                null, // 知识卡片搜索器：ES 已迁移至 Milvus，暂用 null（后续通过 MySQL LIKE + Milvus 混合检索替代）
+                publicKnowledgeMilvusSearcher,
                 ragRecallExecutor,
                 ragReranker,
                 ragHydeService,

@@ -1,81 +1,64 @@
 package com.yuyu.fishagent.common.trace;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.data.elasticsearch.core.ElasticsearchOperations;
-import org.springframework.data.elasticsearch.core.IndexOperations;
-import org.springframework.data.elasticsearch.core.document.Document;
-import org.springframework.data.elasticsearch.core.mapping.IndexCoordinates;
 import org.springframework.stereotype.Component;
 
-import java.util.Map;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.concurrent.ThreadLocalRandom;
 
 /**
- * TurnTrace 异步 ES 写入器。
+ * TurnTrace 异步文件写入器。
  *
- * <p>写入失败只记录日志，不影响 SSE 主链路；采样和索引名也收敛在这里。</p>
+ * <p>将每轮对话的 trace 以 JSON 文件形式写入本地磁盘，文件名格式为 {turnId}.json。
+ * 写入失败只记录日志，不影响 SSE 主链路。采样和文档大小限制也收敛在这里。</p>
  */
 @Slf4j
 @Component
 @RequiredArgsConstructor
-public class TraceEsWriter {
+public class TraceFileWriter {
 
-    private final ObjectProvider<ElasticsearchOperations> operationsProvider;
     private final TraceProperties properties;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     @PostConstruct
-    public void initIndex() {
-        if (!properties.isEnabled()) {
-            return;
-        }
-        ElasticsearchOperations operations = operationsProvider.getIfAvailable();
-        if (operations == null) {
-            return;
-        }
+    public void initDir() {
         try {
-            IndexOperations indexOps = operations.indexOps(IndexCoordinates.of(properties.getEsIndex()));
-            if (!indexOps.exists()) {
-                indexOps.create();
-                indexOps.putMapping(mapping());
-            }
-        } catch (Exception e) {
-            log.warn("[TraceEsWriter] 初始化 trace 索引失败: {}", e.getMessage());
+            Files.createDirectories(Paths.get(properties.getStorageDir()));
+        } catch (IOException e) {
+            log.warn("[TraceFileWriter] 创建存储目录失败: {}", e.getMessage());
         }
     }
 
     public void persistAsync(TurnTrace trace) {
-        if (!shouldPersist(trace)) {
-            return;
-        }
+        if (!shouldPersist(trace)) return;
         MdcAsync.mdcRunAsync(() -> persist(trace));
     }
 
     private boolean shouldPersist(TurnTrace trace) {
-        if (!properties.isEnabled() || trace == null) {
-            return false;
-        }
+        if (!properties.isEnabled() || trace == null) return false;
         double sampleRate = Math.max(0.0, Math.min(1.0, properties.getSampleRate()));
         return sampleRate >= 1.0 || ThreadLocalRandom.current().nextDouble() < sampleRate;
     }
 
     private void persist(TurnTrace trace) {
         try {
-            ElasticsearchOperations operations = operationsProvider.getIfAvailable();
-            if (operations == null) {
-                return;
-            }
             enforceDocumentLimit(trace);
-            operations.save(trace, IndexCoordinates.of(properties.getEsIndex()));
+            Path file = Paths.get(properties.getStorageDir(),
+                    trace.getTurnId() + ".json");
+            objectMapper.writeValue(file.toFile(), trace);
         } catch (Exception e) {
-            log.warn("[TraceEsWriter] 写入 turn trace 失败 turnId={}: {}", trace.getTurnId(), e.getMessage());
+            log.warn("[TraceFileWriter] 写入失败 turnId={}: {}", trace.getTurnId(), e.getMessage());
         }
     }
 
     /**
-     * 落库前按配置限制单条 trace 文档大小。
+     * 落盘前按配置限制单条 trace 文档大小。
      *
      * <p>字段片段在采集时已做单字段截断；这里兜住极端流式场景下节点数过多导致的文档膨胀。
      * 为保留执行前半段排障价值，采用删尾策略并追加一个截断说明节点。</p>
@@ -125,20 +108,5 @@ public class TraceEsWriter {
 
     private int length(String value) {
         return value == null ? 0 : value.length();
-    }
-
-    private Document mapping() {
-        Document mapping = Document.create();
-        mapping.put("properties", Map.ofEntries(
-                Map.entry("turn_id", Map.of("type", "keyword")),
-                Map.entry("session_id", Map.of("type", "keyword")),
-                Map.entry("trace_id", Map.of("type", "keyword")),
-                Map.entry("status", Map.of("type", "keyword")),
-                Map.entry("start_time_ms", Map.of("type", "date", "format", "epoch_millis")),
-                Map.entry("total_latency_ms", Map.of("type", "long")),
-                Map.entry("rag_injected", Map.of("type", "text")),
-                Map.entry("memory_injected", Map.of("type", "text"))
-        ));
-        return mapping;
     }
 }

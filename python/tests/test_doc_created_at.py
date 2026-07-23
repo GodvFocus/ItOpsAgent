@@ -3,7 +3,7 @@
 覆盖三个可测单元：
   - parse_pdf_date：PDF 元数据日期串 → datetime（纯函数）
   - DocxParser.created_at：python-docx core_properties.created
-  - ElasticsearchIndexer.bulk_index_document_chunks：写入时用传入的 doc_created_at_ms
+  - MilvusIndexer.bulk_index_document_chunks：写入时用传入的 doc_created_at_ms
 """
 
 from __future__ import annotations
@@ -62,36 +62,53 @@ def test_docx_parser_extracts_core_properties_created():
 
 
 # ---------- bulk_index_document_chunks：doc_created_at ----------
-def _capture_bulk(monkeypatch):
+def _make_fake_collection(monkeypatch):
+    """Mock pymilvus 连接与 Collection 插入，捕获 insert 参数。"""
+    # 禁止真实连接
+    monkeypatch.setattr("pymilvus.connections.connect", lambda **kw: None)
+    # 假装所有 collection 都已存在，跳过创建
+    monkeypatch.setattr("pymilvus.utility.has_collection", lambda name: True)
+
     captured = []
 
-    def fake_bulk(client, actions, **kwargs):
-        acts = list(actions)
-        captured.extend(acts)
-        return len(acts), []
+    class FakeCollection:
+        def load(self, **kw):
+            pass
 
-    monkeypatch.setattr("fish_worker.storage.elasticsearch.bulk", fake_bulk)
+        def insert(self, rows):
+            captured.extend(rows)
+
+        def flush(self):
+            pass
+
+    monkeypatch.setattr("pymilvus.Collection", lambda name, **kw: FakeCollection())
     return captured
 
 
-def _indexer():
-    from fish_worker.storage.elasticsearch import ElasticsearchIndexer
+def _make_indexer(monkeypatch):
+    """创建一个不真正连 Milvus 的 MilvusIndexer 实例。"""
+    from fish_worker.storage.milvus import MilvusIndexer
 
-    indexer = ElasticsearchIndexer.__new__(ElasticsearchIndexer)
-    indexer._client = None
-    indexer._s = None
-    return indexer
+    # 阻止 __init__ 中的真实连接
+    monkeypatch.setattr("pymilvus.connections.connect", lambda **kw: None)
+    monkeypatch.setattr("pymilvus.utility.has_collection", lambda name: True)
+
+    class FakeSettings:
+        milvus_uri = "http://localhost:19530"
+        milvus_token = ""
+
+    return MilvusIndexer(FakeSettings())
 
 
 def test_bulk_index_uses_provided_doc_created_at(monkeypatch):
     from fish_worker.chunker.text_chunker import TextChunk
 
-    captured = _capture_bulk(monkeypatch)
-    indexer = _indexer()
+    captured = _make_fake_collection(monkeypatch)
+    indexer = _make_indexer(monkeypatch)
     chunks = [TextChunk(text="hello", chunk_index=0, page=1, token_count=5)]
 
     indexer.bulk_index_document_chunks(
-        index_name="fish-user-knowledge",
+        collection_name="fish_user_knowledge",
         task_id="t1",
         scope_private=True,
         user_id="u1",
@@ -104,20 +121,20 @@ def test_bulk_index_uses_provided_doc_created_at(monkeypatch):
         doc_created_at_ms=1_700_000_000_000,
     )
 
-    assert captured, "bulk 应至少被调用一次"
-    assert captured[0]["_source"]["doc_created_at"] == 1_700_000_000_000
+    assert captured, "insert 应至少被调用一次"
+    assert captured[0]["doc_created_at"] == 1_700_000_000_000
 
 
 def test_bulk_index_falls_back_to_now_without_doc_created_at(monkeypatch):
     from fish_worker.chunker.text_chunker import TextChunk
 
-    captured = _capture_bulk(monkeypatch)
-    indexer = _indexer()
+    captured = _make_fake_collection(monkeypatch)
+    indexer = _make_indexer(monkeypatch)
     chunks = [TextChunk(text="hi", chunk_index=0, page=1, token_count=2)]
 
     before = int(time.time() * 1000)
     indexer.bulk_index_document_chunks(
-        index_name="fish-public-knowledge",
+        collection_name="fish_public_knowledge",
         task_id="t2",
         scope_private=False,
         user_id=None,
@@ -129,8 +146,8 @@ def test_bulk_index_falls_back_to_now_without_doc_created_at(monkeypatch):
     )
     after = int(time.time() * 1000)
 
-    assert captured, "bulk 应至少被调用一次"
-    doc_created_at = captured[0]["_source"]["doc_created_at"]
+    assert captured, "insert 应至少被调用一次"
+    doc_created_at = captured[0]["doc_created_at"]
     assert before <= doc_created_at <= after, f"无真实日期时应回退到当前时间，实际 {doc_created_at}"
 
 

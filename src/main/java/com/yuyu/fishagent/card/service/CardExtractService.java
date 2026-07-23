@@ -48,14 +48,12 @@ public class CardExtractService {
 
     private static final int DIRECT_TOKEN_THRESHOLD = 4000;
     private static final int RECENT_MESSAGE_LIMIT = 20;
-    private static final float EXTERNAL_RELATION_THRESHOLD = 0.75f;
 
     private final ChatMemoryStore chatMemoryStore;
     private final ChatMetadataService chatMetadataService;
     private final KnowledgeCardMapper knowledgeCardMapper;
     private final CardRelationMapper cardRelationMapper;
     private final CardKeywordMapper cardKeywordMapper;
-    private final KnowledgeCardEsSyncService esSyncService;
     private final KeywordService keywordService;
     private final CardGroupService cardGroupService;
     private final CardExtractPromptBuilder promptBuilder;
@@ -180,17 +178,9 @@ public class CardExtractService {
     }
 
     private List<ExtractRelationVO> createExternalRelations(Long userId, List<KnowledgeCard> cards) {
+        // TODO: ES → Milvus 迁移后恢复向量相似度关联发现
         List<ExtractRelationVO> out = new ArrayList<>();
         for (KnowledgeCard card : cards) {
-            for (KnowledgeCardEsSyncService.CardVectorHit hit : esSyncService.findSimilarConfirmed(userId, card, 5)) {
-                if (hit.score() < EXTERNAL_RELATION_THRESHOLD) {
-                    continue;
-                }
-                CardRelation relation = insertRelation(card.getId(), hit.cardId(), CardRelation.TYPE_RELATED_TO, hit.score());
-                if (relation != null) {
-                    out.add(toExtractRelation(relation));
-                }
-            }
             out.addAll(createKeywordGroupRelations(userId, card));
         }
         return out;

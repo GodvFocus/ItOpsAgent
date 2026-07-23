@@ -169,11 +169,11 @@ resilience4j:
         base-config: default
         slow-call-duration-threshold: 15s
         wait-duration-in-open-state: 60s
-      es-text:
+      milvus-text:
         base-config: default
         slow-call-duration-threshold: 3s
         wait-duration-in-open-state: 20s
-      es-vector:
+      milvus-vector:
         base-config: default
         slow-call-duration-threshold: 5s
         wait-duration-in-open-state: 30s

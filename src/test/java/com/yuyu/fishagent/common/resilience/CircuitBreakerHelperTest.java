@@ -13,11 +13,11 @@ class CircuitBreakerHelperTest {
     void shouldReturnFallbackWhenCircuitBreakerIsOpen() {
         CircuitBreakerRegistry registry = CircuitBreakerRegistry.ofDefaults();
         CircuitBreakerHelper helper = new CircuitBreakerHelper(registry);
-        registry.circuitBreaker(ResilienceConstants.CB_ES_TEXT)
+        registry.circuitBreaker(ResilienceConstants.CB_MILVUS_TEXT)
                 .transitionToOpenState();
 
         String result = helper.executeWithCircuitBreaker(
-                ResilienceConstants.CB_ES_TEXT,
+                ResilienceConstants.CB_MILVUS_TEXT,
                 () -> "real",
                 "fallback");
 
@@ -30,7 +30,7 @@ class CircuitBreakerHelperTest {
         CircuitBreakerHelper helper = new CircuitBreakerHelper(registry);
 
         assertThatThrownBy(() -> helper.executeWithCircuitBreaker(
-                ResilienceConstants.CB_ES_VECTOR,
+                ResilienceConstants.CB_MILVUS_VECTOR,
                 () -> {
                     throw new IllegalStateException("upstream failed");
                 },

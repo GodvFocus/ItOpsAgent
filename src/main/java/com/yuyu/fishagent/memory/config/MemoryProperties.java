@@ -92,19 +92,19 @@ public class MemoryProperties {
     private long shortTermTtlDays = 30;
 
     /**
-     * 是否启用长期事实写入 Elasticsearch。
+     * 是否启用长期事实写入 Milvus。
      */
     private boolean longTermEnabled = true;
 
     /**
-     * 长期事实写入的 Elasticsearch 索引名。
+     * 长期事实写入的 Milvus Collection 名。
      */
-    private String longTermIndexName = "fish-user-memory";
+    private String longTermIndexName = "itops_user_memory";
 
     /**
-     * 长期记忆向量维度，需要与实际 Embedding 模型输出一致。
+     * 长期记忆向量维度，需要与实际 Embedding 模型输出一致（BGE-M3 = 1024）。
      */
-    private int embeddingDimensions = 1536;
+    private int embeddingDimensions = 1024;
 
     /**
      * {@code fish.memory.chat}：记忆链路专用 Chat 模型参数。

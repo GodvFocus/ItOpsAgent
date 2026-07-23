@@ -1,11 +1,6 @@
 package com.yuyu.fishagent.common.trace;
 
 import lombok.Data;
-import org.springframework.data.annotation.Id;
-import org.springframework.data.annotation.Transient;
-import org.springframework.data.elasticsearch.annotations.Document;
-import org.springframework.data.elasticsearch.annotations.Field;
-import org.springframework.data.elasticsearch.annotations.FieldType;
 
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -15,34 +10,27 @@ import java.util.concurrent.atomic.AtomicInteger;
 /**
  * 单轮对话执行 trace。
  *
- * <p>只存节点片段与指标，不保存完整 prompt/answer，兼顾排障价值和存储边界。</p>
+ * <p>只存节点片段与指标，不保存完整 prompt/answer，兼顾排障价值和存储边界。
+ * 序列化时通过 Jackson 写入 JSON 文件，{@code completed} 和 {@code nextNodeOrder}
+ * 标记为 transient 不参与序列化。</p>
  */
 @Data
-@Document(indexName = "fish-trace")
 public class TurnTrace {
 
-    @Id
     private String turnId;
 
-    @Field(name = "session_id", type = FieldType.Keyword)
     private String sessionId;
 
-    @Field(name = "trace_id", type = FieldType.Keyword)
     private String traceId;
 
-    @Field(name = "start_time_ms")
     private long startTimeMs;
 
-    @Field(name = "total_latency_ms")
     private long totalLatencyMs;
 
-    @Field(name = "status", type = FieldType.Keyword)
     private String status = "RUNNING";
 
-    @Field(name = "rag_injected", type = FieldType.Text)
     private String ragInjected;
 
-    @Field(name = "memory_injected", type = FieldType.Text)
     private String memoryInjected;
 
     /**
@@ -53,11 +41,9 @@ public class TurnTrace {
      */
     private List<Node> nodes = new CopyOnWriteArrayList<>();
 
-    @Transient
-    private AtomicBoolean completed = new AtomicBoolean(false);
+    private transient AtomicBoolean completed = new AtomicBoolean(false);
 
-    @Transient
-    private AtomicInteger nextNodeOrder = new AtomicInteger(1);
+    private transient AtomicInteger nextNodeOrder = new AtomicInteger(1);
 
     @Data
     public static class Node {

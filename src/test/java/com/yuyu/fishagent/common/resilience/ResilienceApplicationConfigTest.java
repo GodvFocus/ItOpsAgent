@@ -19,16 +19,16 @@ class ResilienceApplicationConfigTest {
 
         assertThat(instanceNames(properties)).contains(
                 ResilienceConstants.CB_LLM,
-                ResilienceConstants.CB_ES_TEXT,
-                ResilienceConstants.CB_ES_VECTOR,
+                ResilienceConstants.CB_MILVUS_TEXT,
+                ResilienceConstants.CB_MILVUS_VECTOR,
                 ResilienceConstants.CB_RERANK
         );
         assertThat(properties).containsEntry(
                 "resilience4j.circuitbreaker.instances.llm.slow-call-duration-threshold", "15s");
         assertThat(properties).containsEntry(
-                "resilience4j.circuitbreaker.instances.es-text.slow-call-duration-threshold", "3s");
+                "resilience4j.circuitbreaker.instances.milvus-text.slow-call-duration-threshold", "3s");
         assertThat(properties).containsEntry(
-                "resilience4j.circuitbreaker.instances.es-vector.slow-call-duration-threshold", "5s");
+                "resilience4j.circuitbreaker.instances.milvus-vector.slow-call-duration-threshold", "5s");
         assertThat(properties).containsEntry(
                 "resilience4j.circuitbreaker.instances.rerank.slow-call-duration-threshold", "5s");
     }

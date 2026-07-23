@@ -16,7 +16,7 @@ import com.yuyu.fishagent.common.trace.MdcAsync;
 import com.yuyu.fishagent.common.trace.TraceCollector;
 import com.yuyu.fishagent.common.trace.TraceConstants;
 import com.yuyu.fishagent.common.trace.TraceContext;
-import com.yuyu.fishagent.common.trace.TraceEsWriter;
+import com.yuyu.fishagent.common.trace.TraceFileWriter;
 import com.yuyu.fishagent.common.metrics.ChatMetrics;
 import com.yuyu.fishagent.common.metrics.ChatTurnLifecycle;
 import com.yuyu.fishagent.chat.history.ChatMemoryStore;
@@ -125,8 +125,8 @@ public class ChatService {
     private final ActiveChatModelContext activeChatModelContext;
     /** 单轮 Agent trace 收集器，只保存进行中的 turn。 */
     private final TraceCollector traceCollector;
-    /** 单轮 Agent trace 异步 ES 写入器。 */
-    private final TraceEsWriter traceEsWriter;
+    /** 单轮 Agent trace 异步文件写入器。 */
+    private final TraceFileWriter traceFileWriter;
     /** 工具大结果 scratch 清理入口。 */
     private final ToolResultGovernor toolResultGovernor;
 
@@ -196,7 +196,7 @@ public class ChatService {
         final ChatTurnLifecycle turnLifecycle = ChatTurnLifecycle.start(chatMetrics, outcome -> {
             var completedTrace = traceCollector.finishTurn(turnId, outcome);
             if (completedTrace != null) {
-                traceEsWriter.persistAsync(completedTrace);
+                traceFileWriter.persistAsync(completedTrace);
                 traceCollector.remove(turnId);
             }
             toolResultGovernor.clearScratch(turnId);

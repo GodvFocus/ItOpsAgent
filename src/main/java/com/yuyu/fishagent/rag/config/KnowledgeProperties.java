@@ -27,14 +27,14 @@ public class KnowledgeProperties {
         private int timeoutMinutes = 10;
     }
 
-    /** Elasticsearch 公有知识库索引名。 */
-    private String publicIndexName = "fish-public-knowledge";
+    /** Milvus 公有知识库 Collection 名。 */
+    private String publicIndexName = "itops_public_knowledge";
 
     /**
-     * 用户上传文档切片索引（与对话长期事实索引 fish-user-memory 分离）。
+     * 用户上传文档切片 Collection（与对话长期事实 Collection itops_user_memory 分离）。
      * 环境变量 {@code KNOWLEDGE_USER_INDEX} 与 Python Worker 对齐。
      */
-    private String userKnowledgeIndexName = "fish-user-knowledge";
+    private String userKnowledgeIndexName = "itops_user_knowledge";
 
     /**
      * 文档解析任务投递的 Redis Stream 键名（与 Python Worker 约定一致）。

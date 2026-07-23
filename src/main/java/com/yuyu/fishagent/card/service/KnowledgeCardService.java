@@ -53,7 +53,6 @@ public class KnowledgeCardService {
 
     private final KnowledgeCardMapper knowledgeCardMapper;
     private final CardRelationMapper cardRelationMapper;
-    private final KnowledgeCardEsSyncService esSyncService;
     private final KeywordService keywordService;
     private final CardGroupService cardGroupService;
     private final ChunkClusterService chunkClusterService;
@@ -79,7 +78,8 @@ public class KnowledgeCardService {
         knowledgeCardMapper.insert(card);
         keywordService.syncKeywordsForCard(card.getId(), userId, card.getKeywords(), "manual");
         cardGroupService.syncGroupForCard(card.getId(), userId, card.getGroupName());
-        esSyncService.syncConfirmedQuietly(card);
+        // TODO: ES → Milvus 迁移后恢复卡片向量同步
+        // esSyncService.syncConfirmedQuietly(card);
         return card.getId();
     }
 
@@ -136,7 +136,8 @@ public class KnowledgeCardService {
         keywordService.syncKeywordsForCard(card.getId(), userId, card.getKeywords(), "manual");
         cardGroupService.syncGroupForCard(card.getId(), userId, card.getGroupName());
         if (KnowledgeCard.STATUS_CONFIRMED.equals(card.getStatus())) {
-            esSyncService.syncConfirmedQuietly(card);
+            // TODO: ES → Milvus 迁移后恢复卡片向量同步
+            // esSyncService.syncConfirmedQuietly(card);
         }
     }
 
@@ -165,7 +166,8 @@ public class KnowledgeCardService {
                 .eq(CardRelation::getToCardId, card.getId()));
         // 3. 最后删主表
         knowledgeCardMapper.deleteById(card.getId());
-        esSyncService.deleteQuietly(card.getId());
+        // TODO: ES → Milvus 迁移后恢复卡片向量删除
+        // esSyncService.deleteQuietly(card.getId());
     }
 
     /**
@@ -183,7 +185,8 @@ public class KnowledgeCardService {
         for (KnowledgeCard card : cards) {
             card.setStatus(KnowledgeCard.STATUS_CONFIRMED);
             knowledgeCardMapper.updateById(card);
-            esSyncService.syncConfirmedQuietly(card);
+            // TODO: ES → Milvus 迁移后恢复卡片向量同步
+            // esSyncService.syncConfirmedQuietly(card);
         }
     }
 
@@ -202,7 +205,8 @@ public class KnowledgeCardService {
         for (KnowledgeCard card : cards) {
             card.setStatus(KnowledgeCard.STATUS_REJECTED);
             knowledgeCardMapper.updateById(card);
-            esSyncService.deleteQuietly(card.getId());
+            // TODO: ES → Milvus 迁移后恢复卡片向量删除
+            // esSyncService.deleteQuietly(card.getId());
         }
     }
 
@@ -247,9 +251,10 @@ public class KnowledgeCardService {
         cardRelationMapper.delete(Wrappers.<CardRelation>lambdaQuery()
                 .eq(CardRelation::getToCardId, discardId));
         knowledgeCardMapper.deleteById(discardId);
-        esSyncService.deleteQuietly(discardId);
+        // TODO: ES → Milvus 迁移后恢复卡片向量操作
+        // esSyncService.deleteQuietly(discardId);
         if (KnowledgeCard.STATUS_CONFIRMED.equals(keep.getStatus())) {
-            esSyncService.syncConfirmedQuietly(keep);
+            // esSyncService.syncConfirmedQuietly(keep);
         }
     }
 
@@ -340,6 +345,30 @@ public class KnowledgeCardService {
                 .ge(KnowledgeCard::getCreatedAt, LocalDateTime.now().minusDays(7)));
         long relationCount = cardRelationMapper.countForUser(userId);
         return new CardStatsVO(total, confirmed, pending, relationCount, weekNew, cardGroupService.getUserGroupTree(userId));
+    }
+
+    /**
+     * 卡片关键词检索（MySQL LIKE），替代原来 ES 向量+全文检索。
+     * 仅检索已确认的卡片，在标题和内容中模糊匹配用户输入的关键词。
+     *
+     * @param userId  用户 ID
+     * @param keyword 搜索关键词
+     * @param limit   返回结果数量上限（1-20）
+     * @return 匹配的已确认卡片列表
+     */
+    public List<KnowledgeCard> searchByKeyword(Long userId, String keyword, int limit) {
+        if (userId == null || keyword == null || keyword.isBlank()) {
+            return List.of();
+        }
+        int safeLimit = Math.max(1, Math.min(limit, 20));
+        return knowledgeCardMapper.selectList(
+                Wrappers.<KnowledgeCard>lambdaQuery()
+                        .eq(KnowledgeCard::getUserId, userId)
+                        .eq(KnowledgeCard::getStatus, KnowledgeCard.STATUS_CONFIRMED)
+                        .and(w -> w.like(KnowledgeCard::getTitle, keyword)
+                                .or().like(KnowledgeCard::getContent, keyword))
+                        .last("LIMIT " + safeLimit)
+        );
     }
 
     private List<KnowledgeCard> ownedCards(Long userId, List<Long> ids) {

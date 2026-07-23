@@ -22,7 +22,6 @@ import io.micrometer.observation.annotation.Observed;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.data.elasticsearch.core.ElasticsearchOperations;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -129,9 +128,9 @@ public final class RagRecall {
     }
 
     /**
-     * 单一路 ES 索引上的检索抽象（用户私有记忆或公有知识库各自实现）。
-     * <p>首参 {@code sessionId} 不参与私有索引过滤：{@link com.yuyu.fishagent.rag.pipeline.recall.UserMemoryElasticsearchSearcher}
-     * 按当前登录用户的 {@code user_id}（{@link UserContextHolder}）做 ES term filter；
+     * 单一索引上的检索抽象（用户私有记忆或公有知识库各自实现）。
+     * <p>首参 {@code sessionId} 不参与私有索引过滤：{@link com.yuyu.fishagent.rag.pipeline.recall.UserMemoryMilvusSearcher}
+     * 按当前登录用户的 {@code user_id}（{@link UserContextHolder}）做 Milvus filter；
      * {@code sessionId} 仅为兼容签名 / 未来扩展，切勿误认为「按会话召回」。</p>
      */
     public interface DocumentSearcher {
@@ -190,7 +189,6 @@ public final class RagRecall {
         private final DocumentSearcher userKnowledgeSearcher;
         private final DocumentSearcher userKnowledgeCardSearcher;
         private final DocumentSearcher publicKnowledgeSearcher;
-        private final ObjectProvider<ElasticsearchOperations> operationsProvider;
         private final ExecutorService recallExecutor;
         private final RagReranker reranker;
         private final RagHydeService hydeService;
@@ -210,7 +208,6 @@ public final class RagRecall {
                 DocumentSearcher userKnowledgeSearcher,
                 DocumentSearcher userKnowledgeCardSearcher,
                 DocumentSearcher publicKnowledgeSearcher,
-                ObjectProvider<ElasticsearchOperations> operationsProvider,
                 @Qualifier("ragRecallExecutor") ExecutorService recallExecutor,
                 RagReranker reranker,
                 RagHydeService hydeService,
@@ -226,7 +223,6 @@ public final class RagRecall {
             this.userKnowledgeSearcher = userKnowledgeSearcher;
             this.userKnowledgeCardSearcher = userKnowledgeCardSearcher;
             this.publicKnowledgeSearcher = publicKnowledgeSearcher;
-            this.operationsProvider = operationsProvider;
             this.recallExecutor = recallExecutor;
             this.reranker = reranker;
             this.hydeService = hydeService;
@@ -234,7 +230,7 @@ public final class RagRecall {
             this.circuitBreakerHelper = circuitBreakerHelper;
             this.chatMetrics = chatMetrics;
             this.provenanceBooster = new ProvenanceBooster(ragProperties);
-            this.contextExpander = new ContextExpander(ragProperties, knowledgeProperties, operationsProvider);
+            this.contextExpander = new ContextExpander(ragProperties, knowledgeProperties);
             this.cardGraphExpander = new CardGraphExpander(cardRelationMapper, knowledgeCardMapper);
         }
 
@@ -266,10 +262,7 @@ public final class RagRecall {
             if (!ragProperties.isEnabled()) {
                 return Optional.empty();
             }
-            if (operationsProvider.getIfAvailable() == null) {
-                log.debug("[RagRecall] ElasticsearchOperations 不可用，跳过 RAG");
-                return Optional.empty();
-            }
+            // ES 已迁移至 Milvus，不再需要检查 ElasticsearchOperations 可用性
             if (rawUserInput == null || rawUserInput.isBlank()) {
                 return Optional.empty();
             }
@@ -471,10 +464,13 @@ public final class RagRecall {
         }
 
         private List<RecallHit> safeTextSearch(DocumentSearcher searcher, String sessionId, String sq, int perK) {
+            if (searcher == null) {
+                return List.of();
+            }
             try {
-                // 文本召回统一共享 es-text 熔断器；打开时直接返回空列表，让 RAG 自动降级。
+                // 文本召回统一共享 Milvus 文本熔断器；打开时直接返回空列表，让 RAG 自动降级。
                 return chatMetrics.ragLegTimer(ChatMetrics.RagLeg.TEXT).record(() -> circuitBreakerHelper.executeWithCircuitBreaker(
-                        ResilienceConstants.CB_ES_TEXT,
+                        ResilienceConstants.CB_MILVUS_TEXT,
                         () -> searcher.searchByText(sessionId, sq, perK),
                         List.of()));
             } catch (Exception e) {
@@ -484,10 +480,13 @@ public final class RagRecall {
         }
 
         private List<RecallHit> safeVectorSearch(DocumentSearcher searcher, String sessionId, String rewritten, int perK) {
+            if (searcher == null) {
+                return List.of();
+            }
             try {
-                // 向量召回包含 Embedding + kNN 查询，统一共享 es-vector 熔断器。
+                // 向量召回包含 Embedding + kNN 查询，统一共享 Milvus 向量熔断器。
                 return chatMetrics.ragLegTimer(ChatMetrics.RagLeg.VECTOR).record(() -> circuitBreakerHelper.executeWithCircuitBreaker(
-                        ResilienceConstants.CB_ES_VECTOR,
+                        ResilienceConstants.CB_MILVUS_VECTOR,
                         () -> searcher.searchByVector(sessionId, rewritten, perK),
                         List.of()));
             } catch (Exception e) {

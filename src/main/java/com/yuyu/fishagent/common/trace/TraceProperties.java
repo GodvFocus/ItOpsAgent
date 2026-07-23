@@ -15,8 +15,11 @@ public class TraceProperties {
     /** 总开关；关闭后主链路只保留原有指标，不采集/写入 turn trace。 */
     private boolean enabled = true;
 
-    /** Trace ES 索引名。 */
-    private String esIndex = "fish-trace";
+    /** Trace 文件存储目录。 */
+    private String storageDir = "data/traces";
+
+    /** 表名（MySQL 存储时使用，预留）。 */
+    private String tableName = "itops_turn_trace";
 
     /** 单条 trace 文档最大字符数，超出时 writer 会截断片段字段。 */
     private int docMaxChars = 50_000;

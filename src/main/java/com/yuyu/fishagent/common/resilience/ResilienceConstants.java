@@ -13,11 +13,11 @@ public final class ResilienceConstants {
     /** LLM 流式调用熔断器。 */
     public static final String CB_LLM = "llm";
 
-    /** Elasticsearch 文本召回熔断器。 */
-    public static final String CB_ES_TEXT = "es-text";
+    /** Milvus 文本召回熔断器。 */
+    public static final String CB_MILVUS_TEXT = "milvus-text";
 
-    /** Embedding + Elasticsearch 向量召回熔断器。 */
-    public static final String CB_ES_VECTOR = "es-vector";
+    /** Embedding + Milvus 向量召回熔断器。 */
+    public static final String CB_MILVUS_VECTOR = "milvus-vector";
 
     /** DashScope Reranker 精排熔断器。 */
     public static final String CB_RERANK = "rerank";
