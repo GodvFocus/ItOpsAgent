@@ -27,7 +27,7 @@ cd python && pip install -e . && python -m fish_worker
 ## 技术栈
 
 - **后端**：Java 21, Spring Boot 3.5.13, Spring AI 1.1.4, Spring AI Alibaba Agent Framework 1.1.2.0, MyBatis-Plus 3.5.9
-- **LLM**：DashScope（通义千问）、Ollama（本地）、DeepSeek（OpenAI 兼容接口），通过 `fish.llm.chat-provider` 切换
+- **LLM**：DeepSeek（Chat，OpenAI 兼容接口）、Ollama（本地 Chat + BGE-M3 Embedding），通过 `fish.llm.chat-provider` 切换
 - **存储**：MySQL（关系数据）、Redis（会话/缓存/限流）、Milvus + BGE-M3（向量检索底座，替代原 ES）、MinIO（S3 对象存储）
 - **可观测**：Micrometer → Prometheus (`/actuator/prometheus` 在 9092 端口), Resilience4j 熔断
 - **前端**：Vue 3 + TypeScript + Vite + Element Plus + Pinia
@@ -43,11 +43,11 @@ cd python && pip install -e . && python -m fish_worker
 |---|---|
 | `agent` | ReAct Agent 编排。`BaseAgent`/`ChatAgent` 封装 Spring AI Alibaba ReAct 循环，`ToolRegistry` 管理 11 个内置/外部工具，含工具结果预算、摘要和 scratch 检索式回注 |
 | `chat` | 对话核心。`ChatService` 是主链路编排器：登录校验 → 限流 → 上下文组装 → Agent 执行 → SSE 推送。包含上下文窗口 Token 预算管理（`ContextBudgetAllocator`） |
-| `rag` | 多阶段 RAG 管线：查询改写 → 扩展（LLM 分解/HyDE）→ 四索引双路召回（文本 match + 向量 knn）→ RRF 融合 → DashScope Rerank → 邻居扩展/权威加权 |
+| `rag` | 多阶段 RAG 管线：查询改写 → 扩展（LLM 分解/HyDE）→ Milvus 多集合双路召回（BM25 + 向量 ANN）→ RRF 融合 → Rerank → 邻居扩展/权威加权 |
 | `memory` | 三层短期记忆（Redis L1 / RustFS L2 / 完整历史 L3）+ 长期事实的 LLM 抽取、去重、冲突判断、Milvus 存储 |
 | `card` | 从对话中抽取知识卡片，支持创建/确认/拒绝/合并/关系发现/复习队列/ES 同步与定时对账 |
 | `auth` | 基于 Redis 的会话管理，`X-Auth-Token` 头校验，BCrypt 密码哈希 |
-| `common` | Redis Cache 抽象、令牌桶限流、Resilience4j 熔断、Trace 系统（ES 写入）、Prometheus 指标 |
+| `common` | Redis Cache 抽象、令牌桶限流、Resilience4j 熔断、Trace 系统（文件写入）、Prometheus 指标 |
 
 ## Docker Desktop 中间件（实际运行，非 docker-compose.yml）
 
@@ -82,9 +82,9 @@ cd python && pip install -e . && python -m fish_worker
 
 - **Spring Boot 版本必须停留 3.5.x**：Spring AI Alibaba 1.1.2.x 不支持 Spring Boot 4.x（包路径迁移导致 ClassNotFound）
 - **`spring.threads.virtual: true`**：启用 Java 21 虚拟线程
-- **LLM 切换**：通过 `FISH_LLM_CHAT_PROVIDER` 环境变量（DASHSCOPE / OLLAMA / DEEPSEEK），`FishLlmEnvironmentPostProcessor` 自动补全 `spring.ai.model.chat`
+- **LLM 切换**：通过 `FISH_LLM_CHAT_PROVIDER` 环境变量（OLLAMA / DEEPSEEK），`FishLlmEnvironmentPostProcessor` 自动补全 `spring.ai.model.chat`
 - **敏感凭据**在 `application-dev.yml`（已 gitignore），模板参考该文件头注释
-- **ES 自动配置排除**：`application.yml` 排除了 OpenAI Audio/Image/Embedding/Moderation 自动配置，DeepSeek 仅需 Chat
+- **自动配置排除**：`application.yml` 排除了 OpenAI Audio/Image/Embedding/Moderation 以及所有 DashScope 自动配置（已移除 SDK 依赖）；DeepSeek 仅需 Chat
 
 ## 开发规范
 

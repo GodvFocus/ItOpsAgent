@@ -13,7 +13,7 @@
 - **Spring Cache + Redis** 多级缓存、userId 防 key 越权、延迟驱逐
 - **MDC TraceId** 全链路追踪（Servlet / CompletableFuture / Reactor / SSE 四层传播）
 - **Redis** Stream 消息队列、Lua 令牌桶限流、会话锁
-- **Elasticsearch** dense_vector 向量检索 + ik_max_word 全文双路召回
+- **Milvus** BM25 全文 + 向量 ANN（BGE-M3 1024 维 COSINE）双路召回
 - **Python** 6 种格式文档解析 + 结构感知分块（PDF/TXT/DOCX/HTML/XLSX/PPTX）
 - **Vue 3 + SSE** 流式对话前端、知识图谱可视化、翻转复习、暗夜模式
 
@@ -23,20 +23,19 @@
 
 登录鉴权 → Redis 令牌桶 + SSE 并发限流 → 同会话互斥锁 → TraceFilter 注入 traceId → 多轮 SSE 流式对话 → CircuitBreaker 熔断保护 → 三层短期记忆（L1 Redis → L2 快照 → L3 全量）+ 长期事实抽取 → RAG 五级管线（查询扩展 → 四索引双路召回 → RRF 融合 → Cross-Encoder 精排 → Top-K 注入）→ ReAct 工具调用。
 
-对话模型 **DashScope / Ollama / DeepSeek** 三路可选，嵌入独立配置，切换只需一个环境变量。
+对话模型 **Ollama / DeepSeek** 可选（DeepSeek 为 Chat，Ollama 支持 Chat + BGE-M3 Embedding），切换只需一个环境变量。
 
-知识库闭环：前端上传（直传/分片）→ Java 写入 RustFS + MySQL + Redis Stream → Python Worker 异步消费 → PyMuPDF + Tesseract OCR 解析 PDF → tiktoken 分块 → DashScope embedding → ES 批量写入 → 前端管理页。
+知识库闭环：前端上传（直传/分片）→ Java 写入 MinIO + MySQL + Redis Stream → Python Worker 异步消费 → PyMuPDF + Tesseract OCR 解析 PDF → tiktoken 分块 → BGE-M3 embedding → Milvus 批量写入 → 前端管理页。
 
 ```mermaid
 flowchart LR
     A[Vue 3 SPA] -->|SSE + X-Auth-Token| B[Spring Boot :8080]
     B --> C[(MySQL)]
     B --> D[(Redis)]
-    B --> E[(Elasticsearch)]
-    B --> F[(RustFS/MinIO)]
+    B --> E[(Milvus)]
+    B --> F[(MinIO)]
     D -->|XREADGROUP| G[Python Worker :8091]
     G --> F
-    G --> E
     G --> C
 ```
 
@@ -46,14 +45,14 @@ flowchart LR
 |------|------|------|
 | **运行时** | JDK 21 | 虚拟线程 `spring.threads.virtual.enabled=true` |
 | **框架** | Spring Boot 3.5.13 + Spring AI 1.1.4 + Spring AI Alibaba 1.1.2 | ReAct Agent + `ModelCallLimitHook` |
-| **AI 模型** | DeepSeek (Chat) / DashScope (Embedding) / Ollama | Chat 与 Embedding 独立路由，三路切换零侵入 |
+| **AI 模型** | DeepSeek (Chat) / Ollama (Chat + BGE-M3 Embedding) | Chat 与 Embedding 独立路由，切换零侵入 |
 | **持久层** | MyBatis-Plus 3.5 | `sys_user` / `chat_metadata` / `document_metadata` / `knowledge_card` 等 |
 | **缓存** | Redis (Lettuce) + Spring Cache | Session + 短期记忆 + Stream 队列 + 限流令牌桶 + 会话互斥锁 + 知识卡片多级缓存 |
-| **熔断** | Resilience4j 2.2.0 | 4 个 CB 实例（llm / es-text / es-vector / rerank），Reactor + 同步双模式 |
-| **检索引擎** | Elasticsearch 8.x `dense_vector` | 四索引：用户记忆 / 私有知识 / 公共知识 / 知识卡片，文本 + 向量双路召回 |
-| **对象存储** | MinIO / RustFS (S3 兼容) | 对话 JSON 存档 + 文档原文 |
+| **熔断** | Resilience4j 2.2.0 | 4 个 CB 实例（llm / milvus-text / milvus-vector / rerank），Reactor + 同步双模式 |
+| **检索引擎** | Milvus 2.4.x + BGE-M3 | 三 Collection：用户记忆 / 私有知识 / 公共知识，BM25 文本 + 1024 维 COSINE ANN 双路召回 |
+| **对象存储** | MinIO (S3 兼容) | 文档原文 + 短期记忆快照 |
 | **链路追踪** | SLF4j MDC + TraceFilter | traceId 全链路传播，logback 结构化日志 |
-| **Python Worker** | Python 3.11+ | 6 种格式解析 + 结构感知分块 + tiktoken + httpx → DashScope Embedding |
+| **Python Worker** | Python 3.11+ | 6 种格式解析 + 结构感知分块 + tiktoken + httpx → BGE-M3 Embedding → Milvus 写入 |
 | **前端** | Vue 3.5 + TypeScript + Vite 6 + Element Plus + Pinia | SSE 流式呈现 + 暗夜模式 + Markdown 代码高亮 + 分片上传 |
 | **安全** | spring-security-crypto (BCrypt) | UUID Token + Redis Session（非 JWT，支持即时登出/封禁）+ `HandlerInterceptor` 鉴权 |
 
@@ -65,11 +64,11 @@ flowchart LR
 
 ### 三路模型路由 + 对话/嵌入独立配置
 
-`FishLlmEnvironmentPostProcessor` 在 Spring 环境早期将 `fish.llm.chat-provider` 自动推导为 `spring.ai.model.chat`（DASHSCOPE → `dashscope` / OLLAMA → `ollama` / DEEPSEEK → `openai`）。DeepSeek 通过复用 OpenAI 兼容适配器零代码接入——仅需改 `base-url` 和 `api-key`。v2.4 新增独立 `memoryChatModel` Bean，记忆压缩与长期事实抽取使用专用模型配置（更低 temperature、禁用 tool calling），通过 `@Qualifier` 精确注入。
+`FishLlmEnvironmentPostProcessor` 在 Spring 环境早期将 `fish.llm.chat-provider` 自动推导为 `spring.ai.model.chat`（OLLAMA → `ollama` / DEEPSEEK → `openai`）。DeepSeek 通过复用 OpenAI 兼容适配器零代码接入——仅需改 `base-url` 和 `api-key`。v2.4 新增独立 `memoryChatModel` Bean，记忆压缩与长期事实抽取使用专用模型配置（更低 temperature、禁用 tool calling），通过 `@Qualifier` 精确注入。
 
-### 三层短期记忆 + ES 长期事实
+### 三层短期记忆 + Milvus 长期事实
 
-短期记忆按访问热度分三层（Read-Through / Write-Through）：**L1 Redis 热窗口**（~1ms，JSON 消息窗口 + LLM 摘要）→ **L2 RustFS 快照**（~10ms，压缩摘要 + 窗口备份）→ **L3 全量历史**（~1-3s，完整对话 JSONL 冷加载）。热会话命中 L1 微秒返回，冷会话逐级回退并自动回填上级缓存。长期事实（ES `dense_vector`）跨会话累积，检索时**异步**注入。短期压缩与长期录入两条链路职责不交叉——压缩「只写 Redis + RustFS」、录入「只写 ES」。`LongTermMemoryFactSanitizer` 白名单过滤 + ES kNN 去重（手动 cosine ≥ 0.92），保证向量索引信噪比。
+短期记忆按访问热度分三层（Read-Through / Write-Through）：**L1 Redis 热窗口**（~1ms，JSON 消息窗口 + LLM 摘要）→ **L2 文件快照**（~10ms，压缩摘要 + 窗口备份）→ **L3 全量历史**（~1-3s，完整对话 JSONL 冷加载）。热会话命中 L1 微秒返回，冷会话逐级回退并自动回填上级缓存。长期事实（Milvus BM25 + COSINE ANN）跨会话累积，检索时**异步**注入。短期压缩与长期录入两条链路职责不交叉——压缩「只写 Redis + 快照」、录入「只写 Milvus」。`LongTermMemoryFactSanitizer` 白名单过滤 + Milvus kNN 去重（cosine ≥ 0.92），保证向量索引信噪比。
 
 ```mermaid
 sequenceDiagram
@@ -79,14 +78,14 @@ sequenceDiagram
     participant Compress as MemoryCompressionService
     participant Ingest as LongTermMemoryIngestionService
     participant LLM as memoryChatModel
-    participant ES as Elasticsearch
+    participant MS as Milvus
     participant RAG as RagRecall
 
     User->>CS: 发送消息
     CS->>STS: L1 Redis → L2 快照 → L3 全量（逐级回退）
     CS->>RAG: 构建 RAG 上下文块
-    RAG->>ES: 四路并发检索（记忆 + 用户文档 + 知识卡片 + 公共知识）
-    ES-->>RAG: 命中列表
+    RAG->>MS: Milvus 多 Collection 并发检索（BM25 + 向量 ANN）
+    MS-->>RAG: 命中列表
     RAG-->>CS: RRF 融合 → Cross-Encoder 精排 → Top-K 注入 SystemMessage
     CS->>CS: ReAct 对话（主模型）
 
@@ -95,7 +94,7 @@ sequenceDiagram
     CS->>Ingest: 异步抽取长期事实
     Ingest->>LLM: Prompt：判断是否存在稳定事实
     LLM-->>Ingest: JSON 事实列表
-    Ingest->>ES: 写入 fish-user-memory
+    Ingest->>MS: 写入 itops_user_memory
     CS->>Compress: 触发记忆压缩（≥30 条阈值）
     Compress->>LLM: Prompt：压缩历史生成摘要
     LLM-->>Compress: JSON 摘要
@@ -106,15 +105,15 @@ sequenceDiagram
 
 **第一级 — LLM 查询扩展**：将用户 query 语义分解为 1-4 条完整检索句（3s 超时自动降级为原句），替代简单的词级切分，支持多意图查询。
 
-**第二级 — 四索引双路并发召回**：`fish-user-memory`（对话事实，`source_type=chat`）+ `fish-user-knowledge`（用户文档）+ `fish-knowledge-card`（知识卡片，confirmed 状态）+ `fish-public-knowledge`（公共知识）四索引分离，每子查询 4 索引 × 2 路（文本 `match` + 向量 `knn`）= 8 路并发。虚拟线程下 ThreadLocal 显式快照回放，保证 `user_id` filter 在异步线程中不丢失。可选 HyDE 假设性答案增强（生成假设答案替代原 query embedding，仅影响向量检索路）。
+**第二级 — Milvus 多 Collection 双路并发召回**：`itops_user_memory`（对话事实）+ `itops_user_knowledge`（用户文档）+ `itops_public_knowledge`（公共知识）三 Collection 分离，每子查询 3 Collection × 2 路（BM25 文本 + COSINE ANN 向量）= 6 路并发。虚拟线程下 ThreadLocal 显式快照回放，保证 `user_id` filter 在异步线程中不丢失。可选 HyDE 假设性答案增强（生成假设答案替代原 query embedding，仅影响向量检索路）。
 
 **第三级 — RRF 分数融合**：`score = Σ 1/(k + rank + 1)`（k=60，BEIR benchmark 经验值），只看排名不看原始分，天然解决 BM25 与 cosine 分数量纲不可比的问题。候选池 poolSize=50。
 
-**第四级 — Cross-Encoder 精排**：DashScope qwen3-rerank 模型对候选池做 query-document 交互式编码，精度远高于双塔模型。取 Top-8 注入，失败降级为截取融合池前 N 条。
+**第四级 — Cross-Encoder 精排**：DashScope qwen3-rerank（HTTP 直连，非 SDK）对候选池做 query-document 交互式编码，取 Top-8 注入，失败降级为截取融合池前 N 条。
 
 **第五级 — Top-K 注入**：去重合并后注入单条 SystemMessage，最大 4000 字符。
 
-RAG 检索和重排序均经 CircuitBreaker 熔断保护：es-text / es-vector / rerank 三个独立熔断器，ES 不可用时自动降级为仅向量/仅文本单路召回，rerank 不可用时降级为原始 RRF 分数排序。
+RAG 检索和重排序均经 CircuitBreaker 熔断保护：milvus-text / milvus-vector / rerank 三个独立熔断器，rerank 不可用时降级为原始 RRF 分数排序。
 
 ### 知识卡片系统
 
@@ -128,7 +127,7 @@ AI 驱动的结构化知识管理。核心流程：用户选中知识块 → LLM
 
 ### 知识库闭环：Java 投递 + Python Worker 异步消费
 
-Java 只负责写入 RustFS + MySQL + Redis Stream，Python Worker 异步消费。通过 Redis Stream 消费者组解耦，两个进程仅共享基础设施。Python Worker 支持 **6 种文档格式**（PDF / TXT / MD / DOCX / HTML / XLSX / PPTX），PDF 解析经过三代库迭代（pypdf → pdfminer → PyMuPDF + Tesseract OCR），用「渲染为 300 DPI PNG → OCR 识别」替代「解码字体映射」，中文准确率 >95%。**结构感知分块**：正文按句子边界贪心打包（512 token / 50 overlap），表格整表优先→超限时行组切分 + 重复表头，保证表格语义完整性。DashScope embedding 批量写入 ES（25 条/次，指数退避重试）。
+Java 只负责写入 MinIO + MySQL + Redis Stream，Python Worker 异步消费。通过 Redis Stream 消费者组解耦，两个进程仅共享基础设施。Python Worker 支持 **6 种文档格式**（PDF / TXT / MD / DOCX / HTML / XLSX / PPTX），PDF 解析经过三代库迭代（pypdf → pdfminer → PyMuPDF + Tesseract OCR），用「渲染为 300 DPI PNG → OCR 识别」替代「解码字体映射」，中文准确率 >95%。**结构感知分块**：正文按句子边界贪心打包（512 token / 50 overlap），表格整表优先→超限时行组切分 + 重复表头，保证表格语义完整性。BGE-M3 embedding 批量写入 Milvus（指数退避重试）。
 
 **五重崩溃保障**：XAUTOCLAIM（120s idle 自动恢复临时崩溃）+ Python `delete_by_doc_id` 幂等清理 + Worker 30s 心跳刷新（防长任务被误判孤儿）+ MySQL CAS 原子更新（防并发竞争）+ Java `OrphanTaskCompensationService`（60s 定时清理永久崩溃的 PROCESSING 记录）。
 
@@ -137,23 +136,23 @@ sequenceDiagram
     participant U as 用户
     participant FE as KnowledgeUpload
     participant BE as Java
-    participant RustFS as RustFS itops-docs
+    participant MinIO as MinIO itops-docs
     participant MySQL as MySQL
     participant Stream as Redis Stream
     participant Worker as Python Worker
-    participant ES as Elasticsearch
+    participant Milvus as Milvus
 
     U->>FE: 选择文件
     alt 文件 ≤ 1MB（直传）
         FE->>BE: POST /api/knowledge/upload
-        BE->>RustFS: putObject（流式）
+        BE->>MinIO: putObject（流式）
     else 文件 > 1MB（分片）
         FE->>BE: POST /api/knowledge/upload/init
         loop 每个 5MB 分片
             FE->>BE: POST /api/knowledge/upload/chunk
         end
         FE->>BE: POST /api/knowledge/upload/complete
-        BE->>RustFS: composeObject（合并分片）
+        BE->>MinIO: composeObject（合并分片）
     end
     BE->>MySQL: INSERT (status=PENDING)
     BE->>Stream: XADD fish:doc:ingest
@@ -161,11 +160,11 @@ sequenceDiagram
 
     Worker->>Stream: XREADGROUP 消费
     Worker->>MySQL: UPDATE status=PROCESSING
-    Worker->>RustFS: getObject 下载原文件
+    Worker->>MinIO: getObject 下载原文件
     Worker->>Worker: PyMuPDF 渲染 → Tesseract OCR (chi_sim+eng)
     Worker->>Worker: tiktoken 分块 (512 token / 50 overlap)
-    Worker->>Worker: DashScope embedding (批量 ≤25 条/次)
-    Worker->>ES: delete_by_doc_id 幂等清理 → bulk 20 条/批
+    Worker->>Worker: BGE-M3 embedding (Ollama)
+    Worker->>Milvus: delete 幂等清理 → insert 批量写入
     Worker->>MySQL: UPDATE status=SUCCESS + chunk_count
     Worker->>Stream: XACK 确认
 
@@ -175,7 +174,7 @@ sequenceDiagram
 
 ### Resilience4j 熔断保护
 
-4 个独立 CircuitBreaker 实例覆盖所有外部服务调用：**llm**（LLM 流式调用，`CircuitBreakerOperator` + `transformDeferred` 保护 Reactor Flux 完整生命周期）、**es-text**（ES 全文召回）、**es-vector**（ES 向量召回）、**rerank**（重排序服务）。状态机 CLOSED → OPEN → HALF-OPEN 自动切换：OPEN 时 LLM 降级为预设回复模板，ES 双路召回降级为可用单路，rerank 降级为原始 score 排序。慢调用检测（`slowCallDurationThreshold`）在延迟飙升时提前触发熔断，不等到服务完全不可用。
+4 个独立 CircuitBreaker 实例覆盖所有外部服务调用：**llm**（LLM 流式调用）、**milvus-text**（Milvus BM25 文本召回）、**milvus-vector**（Milvus 向量 ANN 召回）、**rerank**（重排序服务）。状态机 CLOSED → OPEN → HALF-OPEN 自动切换：OPEN 时 LLM 降级为预设回复模板，Milvus 双路召回降级为可用单路，rerank 降级为原始 score 排序。
 
 ### MDC TraceId 全链路传播
 
@@ -201,7 +200,7 @@ Python Worker 的 `config.py`（pydantic-settings）与 Java 的 `application.ym
 | **Node.js** | 18+ |
 | **pnpm** | 最新版 |
 | **Python** | 3.10+ |
-| **Docker** | ES / Redis / RustFS |
+| **Docker** | Redis / MySQL / Milvus / MinIO |
 | **MySQL** | 8.x（本地） |
 | **Tesseract OCR** | Windows 需手动安装 + `chi_sim` 中文语言包 |
 
@@ -210,22 +209,15 @@ Python Worker 的 `config.py`（pydantic-settings）与 Java 的 `application.ym
 ### 1. 启动 Docker 中间件
 
 ```bash
-# Elasticsearch 8.x（向量存储）
-docker run -d --name es-vector -p 9200:9200 -p 9300:9300 \
-  -e "discovery.type=single-node" -e "xpack.security.enabled=false" \
-  -e "ES_JAVA_OPTS=-Xms1g -Xmx1g" \
-  -v <你的目录>:/usr/share/elasticsearch/data \
-  docker.elastic.co/elasticsearch/elasticsearch:8.13.0
-
 # Redis（缓存 + Stream + 限流）
-docker run -d --name redis -p 6379:6379 --restart always \
-  -v <你的目录>:/data \
+docker run -d --name fish-redis -p 6379:6379 \
+  -v redis_data:/data \
   redis:8.0 redis-server --appendonly yes
 
-# RustFS / MinIO（S3 兼容对象存储）
-docker run -d --name rustfs_local -p 9000:9000 -p 9001:9001 \
-  -v <你的目录>:/data \
-  rustfs/rustfs:latest /data
+# MinIO（S3 兼容对象存储）
+docker run -d --name minioai -p 9000:9000 -p 9001:9001 \
+  -v minio_data:/data \
+  minio/minio:RELEASE.2023-03-20 server /data
 ```
 
 ### 2. MySQL 初始化
@@ -270,7 +262,7 @@ cp src/main/resources/application-dev.yml.example src/main/resources/application
 | Chat 对话 | `FISH_LLM_CHAT_PROVIDER` | `DEEPSEEK`（默认）、`OLLAMA`、`DASHSCOPE` |
 | Embedding 嵌入 | `FISH_LLM_EMBEDDING_PROVIDER` | `DASHSCOPE`（默认）、`OLLAMA` |
 
-> Chat 与 Embedding 可自由组合：如 Chat 用 DeepSeek + Embedding 用 DashScope。注意当前不支持 DeepSeek 嵌入。
+> Chat 与 Embedding 独立配置：Chat 用 DeepSeek，Embedding 用 Ollama BGE-M3。注意不支持 DeepSeek 嵌入。
 
 **外部工具 API Key：**
 
@@ -384,13 +376,12 @@ Fish-Agent/
 | 变量 | 必填 | 默认值 | 说明 |
 |------|------|-------|------|
 | `DEEPSEEK_API_KEY` | DeepSeek 模式 | — | DeepSeek Chat API Key |
-| `DASHSCOPE_API_KEY` | DashScope 模式 | — | 对话 + Embedding |
+| `DASHSCOPE_API_KEY` | 已弃用（仅 Python Worker 遗留） | — | 已由 Ollama BGE-M3 替代 |
 | `FISH_LLM_CHAT_PROVIDER` | 否 | `DEEPSEEK` | DASHSCOPE / OLLAMA / DEEPSEEK |
 | `FISH_LLM_EMBEDDING_PROVIDER` | 否 | `DASHSCOPE` | DASHSCOPE / OLLAMA |
 | `DB_URL` / `DB_USERNAME` / `DB_PASSWORD` | 是 | — | MySQL 连接 |
 | `REDIS_HOST` / `REDIS_PORT` | 否 | `localhost:6379` | Redis 连接 |
-| `ELASTICSEARCH_URIS` | 否 | `http://localhost:9200` | ES 连接 |
-| `RUSTFS_ACCESS_KEY` / `RUSTFS_SECRET_KEY` | RustFS 开启 | — | MinIO 凭据 |
+| `ELASTICSEARCH_URIS` | 知识卡片模式 | `http://localhost:9200` | ES 连接（仅卡片检索） |
 | `TAVILY_API_KEY` | 否 | — | 搜索工具：[API 文档](https://docs.tavily.com/documentation/api-reference/endpoint/search) |
 | `BOCHA_API_KEY` | 否 | — | AI 搜索：[博查开放平台](https://open.bochaai.com/) |
 | `AMAP_KEY` | 否 | — | 高德地图：[地理编码](https://lbs.amap.com/api/webservice/guide/api/georegeo) / [天气](https://lbs.amap.com/api/webservice/guide/api-advanced/weatherinfo) |

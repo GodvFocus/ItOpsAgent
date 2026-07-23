@@ -29,7 +29,7 @@ public class FishLlmConfigurationConsistencyLogger implements ApplicationRunner 
      */
     @Override
     public void run(ApplicationArguments args) {
-        log.info("[FishLlm] 嵌入模型路由：fish.llm.embedding.provider={}（与对话独立；未配置时默认 DASHSCOPE）",
+        log.info("[FishLlm] 嵌入模型路由：fish.llm.embedding.provider={}（与对话独立；未配置时默认 OLLAMA）",
                 fishLlmEmbeddingProperties.getProvider());
 
         String resolved = environment.getProperty("spring.ai.model.chat");

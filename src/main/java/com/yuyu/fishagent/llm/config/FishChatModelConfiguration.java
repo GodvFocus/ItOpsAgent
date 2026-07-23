@@ -1,6 +1,5 @@
 package com.yuyu.fishagent.llm.config;
 
-import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatModel;
 import com.yuyu.fishagent.memory.config.MemoryProperties;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -20,7 +19,7 @@ import java.util.Map;
 
 /**
  * 将「业务选择的对话后端」收敛为容器内唯一的 {@link ChatModel} {@code @Primary} Bean，
- * 避免在同时引入 DashScope、Ollama、OpenAI-compatible（DeepSeek）starter 时出现多个 {@link ChatModel} 而无法按类型注入。
+ * 避免在同时引入 Ollama、OpenAI-compatible（DeepSeek）starter 时出现多个 {@link ChatModel} 而无法按类型注入。
  * <p>
  * 实际连哪一侧仍由 {@code spring.ai.model.chat}（及 {@link FishLlmEnvironmentPostProcessor} 对
  * {@code fish.llm.chat-provider} 的补全）决定：未激活的自动配置不会注册对应实现，此处通过
@@ -41,7 +40,6 @@ public class FishChatModelConfiguration {
      * <p>使用 {@code @Primary} 覆盖多个具体实现 Bean 的注入歧义。</p>
      *
      * @param ollamaChatModel    本地 Ollama 实现（可能因条件注解未注册）
-     * @param dashScopeChatModel DashScope 实现（可能因条件注解未注册）
      * @param openAiChatModel    OpenAI 兼容实现（DeepSeek 等，可能因条件注解未注册）
      * @return 与 {@link FishLlmProperties#getChatProvider()} 一致的具体模型
      */
@@ -49,7 +47,6 @@ public class FishChatModelConfiguration {
     @Primary
     public ChatModel fishPrimaryChatModel(
             ObjectProvider<OllamaChatModel> ollamaChatModel,
-            ObjectProvider<DashScopeChatModel> dashScopeChatModel,
             ObjectProvider<OpenAiChatModel> openAiChatModel) {
         return switch (fishLlmProperties.getChatProvider()) {
             case OLLAMA -> this.requireBean(
@@ -57,11 +54,6 @@ public class FishChatModelConfiguration {
                     "OLLAMA",
                     "spring.ai.model.chat=ollama",
                     "OllamaChatModel");
-            case DASHSCOPE -> this.requireBean(
-                    dashScopeChatModel.getIfAvailable(),
-                    "DASHSCOPE",
-                    "spring.ai.model.chat=dashscope",
-                    "DashScopeChatModel");
             case DEEPSEEK -> this.requireBean(
                     openAiChatModel.getIfAvailable(),
                     "DEEPSEEK",
@@ -155,7 +147,6 @@ public class FishChatModelConfiguration {
     private static String chatProviderTroubleshootingHint(String providerLabel) {
         return switch (providerLabel) {
             case "OLLAMA" -> " 请确认 Ollama 已启动、spring.ai.ollama.base-url 可达，且对应 Chat 模型已 pull。";
-            case "DASHSCOPE" -> " 请确认已配置 DASHSCOPE_API_KEY，且 dashscope Chat 自动配置未被排除。";
             case "DEEPSEEK" -> " 请确认已配置 DEEPSEEK_API_KEY、spring.ai.openai.base-url（默认 https://api.deepseek.com）。";
             default -> " 请核对所选提供方的 API Key、endpoint 与 starter 依赖。";
         };

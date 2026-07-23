@@ -27,9 +27,9 @@ public class FishLlmProperties {
 
     /**
      * 对话使用的模型提供方；与 {@code spring.ai.model.chat} 应对齐。
-     * <p>默认走 DashScope，与未引入 Ollama 前的行为一致。</p>
+     * <p>默认 DeepSeek，可通过环境变量 {@code FISH_LLM_CHAT_PROVIDER} 覆盖。</p>
      */
-    private FishLlmChatProvider chatProvider = FishLlmChatProvider.DASHSCOPE;
+    private FishLlmChatProvider chatProvider = FishLlmChatProvider.DEEPSEEK;
 
     /**
      * 默认模型上下文窗口大小。未知模型使用该值作为预算基准。

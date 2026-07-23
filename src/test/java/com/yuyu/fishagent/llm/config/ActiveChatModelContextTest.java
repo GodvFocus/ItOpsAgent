@@ -45,17 +45,12 @@ class ActiveChatModelContextTest {
     }
 
     @Test
-    void resolvesOllamaAndDashScopeModelNamesFromProviderSpecificProperties() {
+    void resolvesOllamaModelNameFromProviderSpecificProperty() {
         Environment env = mock(Environment.class);
-        when(env.getProperty("spring.ai.ollama.chat.options.model")).thenReturn("qwen2.5:7b");
-        when(env.getProperty("spring.ai.dashscope.chat.options.model")).thenReturn("qwen-plus");
+        when(env.getProperty("spring.ai.ollama.chat.options.model")).thenReturn("qwen3:0.6b");
 
         FishLlmProperties ollamaProps = new FishLlmProperties();
         ollamaProps.setChatProvider(FishLlmChatProvider.OLLAMA);
-        assertThat(new ActiveChatModelContext(ollamaProps, env).activeModelName()).isEqualTo("qwen2.5:7b");
-
-        FishLlmProperties dashProps = new FishLlmProperties();
-        dashProps.setChatProvider(FishLlmChatProvider.DASHSCOPE);
-        assertThat(new ActiveChatModelContext(dashProps, env).activeModelName()).isEqualTo("qwen-plus");
+        assertThat(new ActiveChatModelContext(ollamaProps, env).activeModelName()).isEqualTo("qwen3:0.6b");
     }
 }

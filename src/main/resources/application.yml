@@ -46,10 +46,6 @@ spring:
       password: ${REDIS_PASSWORD:}
       database: ${REDIS_DATABASE:1}
 
-  elasticsearch:
-    uris: ${ELASTICSEARCH_URIS:http://localhost:9200}
-    username: ${ELASTICSEARCH_USERNAME:}
-    password: ${ELASTICSEARCH_PASSWORD:}
 
   # ── AI 模型 ────────────────────────────────────────────────
   ai:
@@ -59,23 +55,15 @@ spring:
     # ChatModel 自动配置选择：dashscope | ollama | openai
     # 若未在任意 PropertySource 中设置 spring.ai.model.chat，
     # 由 FishLlmEnvironmentPostProcessor 根据 fish.llm.chat-provider 补全
-    dashscope:
-      api-key: sk-ws-H.EHDEDLP.EPQU.MEQCIE2d8sL0E6ch9Kp6_P9xPzPvCOJbCji5Y9t0jXHkNkWLAiBcPuKP6pj8rhaGXBa-rgSIwXKRS1dWm83OhSFaFmTVUA
-      # 对话模型名：显式配置以匹配 fish.llm.model-context-overrides（qwen-plus→131072）。
-      # 不配置时走 starter 内置默认，resolveActiveChatModelName 读不到，预算覆盖不生效。
-      chat:
-        options:
-          model: ${DASHSCOPE_CHAT_MODEL:qwen-plus}
-      embedding:
-        options:
-          model: ${DASHSCOPE_EMBEDDING_MODEL:text-embedding-v2}
-          dimensions: ${DASHSCOPE_EMBEDDING_DIMENSIONS:1536}
 
     ollama:
       base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
       chat:
         options:
-          model: ${OLLAMA_CHAT_MODEL:qwen2.5:7b}
+          model: ${OLLAMA_CHAT_MODEL:qwen3:0.6b}
+      embedding:
+        options:
+          model: ${OLLAMA_EMBEDDING_MODEL:bge-m3}
 
     openai:
       base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
@@ -227,8 +215,9 @@ fish:
     redis-key-prefix: fish:memory
     short-term-ttl-days: 30
     long-term-enabled: ${MEMORY_LONG_TERM_ENABLED:true}
-    long-term-index-name: ${MEMORY_USER_INDEX:fish-user-memory}
-    embedding-dimensions: ${DASHSCOPE_EMBEDDING_DIMENSIONS:1536}
+    long-term-index-name: ${MEMORY_USER_INDEX:itops_user_memory}
+    # BGE-M3 输出 1024 维；如改用 DashScope embedding 需改回 1536
+    embedding-dimensions: ${MEMORY_EMBEDDING_DIMENSIONS:1024}
     # 长期事实写入前查重：避免同一用户反复沉淀高度相似事实
     dedup:
       enabled: ${FISH_MEMORY_DEDUP_ENABLED:true}

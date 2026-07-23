@@ -32,7 +32,6 @@ public class ActiveChatModelContext {
         return switch (fishLlmProperties.getChatProvider()) {
             case DEEPSEEK -> environment.getProperty("spring.ai.openai.chat.options.model");
             case OLLAMA -> environment.getProperty("spring.ai.ollama.chat.options.model");
-            case DASHSCOPE -> environment.getProperty("spring.ai.dashscope.chat.options.model");
         };
     }
 

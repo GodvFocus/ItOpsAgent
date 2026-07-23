@@ -6,8 +6,10 @@ import io.milvus.grpc.DataType;
 import io.milvus.param.IndexType;
 import io.milvus.param.MetricType;
 import io.milvus.param.collection.CreateCollectionParam;
+import io.milvus.param.collection.DescribeCollectionParam;
 import io.milvus.param.collection.FieldType;
 import io.milvus.param.collection.HasCollectionParam;
+import io.milvus.param.collection.LoadCollectionParam;
 import io.milvus.param.index.CreateIndexParam;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
@@ -49,10 +51,14 @@ public class MilvusCollectionInitializer {
         }
     }
 
+    private static final List<String> REQUIRED_FIELDS = List.of("source_type", "superseded");
+
     private void ensureCollection(String name) {
         HasCollectionParam has = HasCollectionParam.newBuilder().withCollectionName(name).build();
         if (milvusClient.hasCollection(has).getData()) {
             log.debug("Milvus collection 已存在: {}", name);
+            checkSchema(name);
+            loadCollection(name);
             return;
         }
 
@@ -133,6 +139,15 @@ public class MilvusCollectionInitializer {
                         .withName("user_id")
                         .withDataType(DataType.VarChar)
                         .withMaxLength(64)
+                        .build(),
+                FieldType.newBuilder()
+                        .withName("source_type")
+                        .withDataType(DataType.VarChar)
+                        .withMaxLength(32)
+                        .build(),
+                FieldType.newBuilder()
+                        .withName("superseded")
+                        .withDataType(DataType.Bool)
                         .build()
         );
 
@@ -152,6 +167,41 @@ public class MilvusCollectionInitializer {
                 .build();
         milvusClient.createIndex(indexParam);
 
+        loadCollection(name);
+
         log.info("已创建 Milvus collection: {}", name);
+    }
+
+    /**
+     * 检查已有 collection schema 是否包含必要字段，防止旧版本无字段的 collection 导致查询失败。
+     */
+    private void checkSchema(String name) {
+        try {
+            var resp = milvusClient.describeCollection(
+                    DescribeCollectionParam.newBuilder().withCollectionName(name).build());
+            var schema = resp.getData().getSchema();
+            var fieldNames = schema.getFieldsList().stream()
+                    .map(f -> f.getName())
+                    .toList();
+            List<String> missing = REQUIRED_FIELDS.stream()
+                    .filter(f -> !fieldNames.contains(f))
+                    .toList();
+            if (!missing.isEmpty()) {
+                log.warn("Milvus collection [{}] Schema 缺少字段 {}，查询将失败。"
+                                + "请手动执行 Drop Collection 后重启重建:\n\t"
+                                + "milvusClient.dropCollection(\"{}\")",
+                        name, missing, name);
+            }
+        } catch (Exception e) {
+            log.debug("Milvus collection [{}] Schema 检查异常: {}", name, e.getMessage());
+        }
+    }
+
+    private void loadCollection(String name) {
+        LoadCollectionParam loadParam = LoadCollectionParam.newBuilder()
+                .withCollectionName(name)
+                .build();
+        milvusClient.loadCollection(loadParam);
+        log.info("已加载 Milvus collection: {}", name);
     }
 }
