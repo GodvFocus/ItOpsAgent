@@ -18,7 +18,7 @@ public class RustFsProperties {
      */
     private boolean enabled = true;
 
-    private String endpoint = "http://localhost:9090";
+    private String endpoint = "http://localhost:9000";
 
     private String accessKey = "";
 

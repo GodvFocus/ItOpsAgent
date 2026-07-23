@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     redis_host: str = Field(default="localhost", validation_alias="REDIS_HOST")
     redis_port: int = Field(default=6379, validation_alias="REDIS_PORT")
     redis_password: str = Field(default="", validation_alias="REDIS_PASSWORD")
-    redis_database: int = Field(default=2, validation_alias="REDIS_DATABASE")
+    redis_database: int = Field(default=1, validation_alias="REDIS_DATABASE")
 
     # ---- RustFS / MinIO（与 fish.rustfs 对齐）----
     rustfs_endpoint: str = Field(default="http://localhost:9000", validation_alias="RUSTFS_ENDPOINT")
