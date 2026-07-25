@@ -4,6 +4,8 @@ import com.alibaba.cloud.ai.graph.NodeOutput;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yuyu.fishagent.agent.ChatAgent;
 import com.yuyu.fishagent.agent.config.AgentProperties;
+import com.yuyu.fishagent.chat.router.QueryRouter;
+import com.yuyu.fishagent.chat.router.RouteDecision;
 import com.yuyu.fishagent.chat.history.ChatMemoryStore;
 import com.yuyu.fishagent.common.metrics.ChatMetrics;
 import com.yuyu.fishagent.common.ratelimit.RateLimitService;
@@ -19,6 +21,7 @@ import com.yuyu.fishagent.memory.shortterm.ShortTermMemorySnapshot;
 import com.yuyu.fishagent.rag.pipeline.recall.RagRecall;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
+import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import reactor.core.publisher.Flux;
 
@@ -60,9 +63,13 @@ class ChatServiceObservabilityTest {
         ActiveChatModelContext activeChatModelContext = mock(ActiveChatModelContext.class);
         when(activeChatModelContext.activeModelName()).thenReturn("deepseek-v4-flash");
         when(activeChatModelContext.effectiveContextWindow()).thenReturn(32_768);
+        ChatModel fastRagChatModel = mock(ChatModel.class);
+        QueryRouter queryRouter = input -> RouteDecision.troubleshootingAgent("test");
 
         ChatService service = new ChatService(
                 chatAgent,
+                fastRagChatModel,
+                queryRouter,
                 mock(ChatMemoryStore.class),
                 shortTermMemoryService,
                 mock(MemoryCompressionService.class),

@@ -51,6 +51,17 @@ public class TraceCollector {
         }
     }
 
+    public void recordRoute(String turnId, String route, String reason) {
+        TurnTrace trace = active.get(turnId);
+        if (trace == null) {
+            return;
+        }
+        trace.setRoute(route);
+        trace.setRouteReason(snippet(reason));
+        recordNode(turnId, "query-router", "router",
+                "route=" + route + ", reason=" + reason, 0, "SUCCESS");
+    }
+
     public void recordNode(String turnId, String nodeName, String type, String content, long latencyMs, String status) {
         recordNode(turnId, nodeName, type, content, latencyMs, status, null);
     }

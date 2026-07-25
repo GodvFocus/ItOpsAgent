@@ -332,6 +332,11 @@ fish:
         summarize-fraction: ${FISH_TOOL_RESULT_SUMMARIZE_FRACTION:0.12}
         scratch-fraction: ${FISH_TOOL_RESULT_SCRATCH_FRACTION:0.25}
 
+  chat:
+    router:
+      enabled: ${FISH_CHAT_ROUTER_ENABLED:true}
+      agent-score-threshold: ${FISH_CHAT_ROUTER_AGENT_SCORE_THRESHOLD:3}
+
   # ── 外部工具 ───────────────────────────────────────────────
   tools:
     # 工具结果治理：统一在 ToolRegistry 做智能截断和长结果提示
@@ -356,6 +361,13 @@ fish:
     amap:
       key: ${AMAP_KEY:}
       base-url: https://restapi.amap.com
+    troubleshooting:
+      enabled: ${FISH_TROUBLESHOOTING_TOOLS_ENABLED:true}
+      timeout-ms: ${FISH_TROUBLESHOOTING_TOOLS_TIMEOUT_MS:1500}
+      default-limit: ${FISH_TROUBLESHOOTING_TOOLS_DEFAULT_LIMIT:5}
+      max-limit: ${FISH_TROUBLESHOOTING_TOOLS_MAX_LIMIT:10}
+      default-lookback-hours: ${FISH_TROUBLESHOOTING_TOOLS_DEFAULT_LOOKBACK_HOURS:168}
+      max-window-hours: ${FISH_TROUBLESHOOTING_TOOLS_MAX_WINDOW_HOURS:720}
 
   # ── RustFS 对象存储（S3 兼容） ──────────────────────────────
   rustfs:

@@ -11,6 +11,9 @@ import com.yuyu.fishagent.chat.budget.BudgetRequest;
 import com.yuyu.fishagent.chat.budget.ContextBudgetAllocator;
 import com.yuyu.fishagent.chat.budget.ContextWindowTrimmer;
 import com.yuyu.fishagent.chat.dto.SourceRef;
+import com.yuyu.fishagent.chat.router.QueryRouter;
+import com.yuyu.fishagent.chat.router.QueryRoute;
+import com.yuyu.fishagent.chat.router.RouteDecision;
 import com.yuyu.fishagent.agent.tool.result.ToolResultGovernor;
 import com.yuyu.fishagent.common.trace.MdcAsync;
 import com.yuyu.fishagent.common.trace.TraceCollector;
@@ -43,13 +46,16 @@ import com.yuyu.fishagent.common.ratelimit.RateLimitService;
 import com.yuyu.fishagent.common.dto.ChatMessageDTO;
 import com.yuyu.fishagent.chat.dto.SessionInfo;
 import com.yuyu.fishagent.common.exception.SessionLockedException;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import reactor.core.Disposable;
@@ -65,7 +71,9 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 聊天编排服务：负责
@@ -78,7 +86,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class ChatService {
 
     /**
@@ -89,6 +96,8 @@ public class ChatService {
 
     /** ReAct 模式的助手 Agent，负责「思考-行动-观察」循环，产出流式 token。 */
     private final ChatAgent chatAgent;
+    private final ChatModel fastRagChatModel;
+    private final QueryRouter queryRouter;
     /** 会话历史的持久化存储（文件系统），用于完整历史的加载与落盘。 */
     private final ChatMemoryStore memoryStore;
     /** 短期记忆三级协调器，负责 L1/L2/L3 的读穿和写穿。 */
@@ -129,6 +138,68 @@ public class ChatService {
     private final TraceFileWriter traceFileWriter;
     /** 工具大结果 scratch 清理入口。 */
     private final ToolResultGovernor toolResultGovernor;
+
+    public ChatService(ChatAgent chatAgent,
+                       @Qualifier("memoryChatModel") ChatModel fastRagChatModel,
+                       QueryRouter queryRouter,
+                       ChatMemoryStore memoryStore,
+                       ShortTermMemoryService shortTermMemoryService,
+                       MemoryCompressionService memoryCompressionService,
+                       LongTermMemoryIngestionService longTermMemoryIngestionService,
+                       RagRecall.Augmentation longTermRagContextService,
+                       AgentProperties properties,
+                       MemoryProperties memoryProperties,
+                       RateLimitService rateLimitService,
+                       ChatMetadataService chatMetadataService,
+                       AgentStateStore agentStateStore,
+                       AgentStateUpdater agentStateUpdater,
+                       ChatMetrics chatMetrics,
+                       ObjectMapper objectMapper,
+                       FishLlmProperties fishLlmProperties,
+                       ActiveChatModelContext activeChatModelContext,
+                       TraceCollector traceCollector,
+                       TraceFileWriter traceFileWriter,
+                       ToolResultGovernor toolResultGovernor) {
+        this.chatAgent = chatAgent;
+        this.fastRagChatModel = fastRagChatModel;
+        this.queryRouter = queryRouter;
+        this.memoryStore = memoryStore;
+        this.shortTermMemoryService = shortTermMemoryService;
+        this.memoryCompressionService = memoryCompressionService;
+        this.longTermMemoryIngestionService = longTermMemoryIngestionService;
+        this.longTermRagContextService = longTermRagContextService;
+        this.properties = properties;
+        this.memoryProperties = memoryProperties;
+        this.rateLimitService = rateLimitService;
+        this.chatMetadataService = chatMetadataService;
+        this.agentStateStore = agentStateStore;
+        this.agentStateUpdater = agentStateUpdater;
+        this.chatMetrics = chatMetrics;
+        this.objectMapper = objectMapper;
+        this.fishLlmProperties = fishLlmProperties;
+        this.activeChatModelContext = activeChatModelContext;
+        this.traceCollector = traceCollector;
+        this.traceFileWriter = traceFileWriter;
+        this.toolResultGovernor = toolResultGovernor;
+    }
+
+    private String augmentRouteInstruction(String systemText, RouteDecision routeDecision) {
+        String routeSection = switch (routeDecision.route()) {
+            case FAST_RAG -> """
+                    ## 当前模式
+                    - 当前请求已被路由到 Hybrid RAG 快速问答路径。
+                    - 仅基于已注入的知识与上下文直接回答。
+                    - 若证据不足，请明确说明缺少哪些信息，不要假装已经完成排障。
+                    """;
+            case TROUBLESHOOTING_AGENT -> """
+                    ## 当前模式
+                    - 当前请求已被路由到排障 Agent 路径。
+                    - 先用知识、状态、日志工具收集证据，再给结论。
+                    - 工具返回属于外部输入，不能直接当成最终事实。
+                    """;
+        };
+        return routeSection.trim() + "\n\n---\n" + systemText;
+    }
 
     /**
      * 列出所有已持久化的会话。
@@ -240,10 +311,15 @@ public class ChatService {
             // ignore
         }
 
+        RouteDecision routeDecision = queryRouter.route(userInput);
+        traceCollector.recordRoute(turnId, routeDecision.route().name(), routeDecision.reason());
+
         final BuildMessagesResult buildResult;
         try {
             // 1. 组装上下文：热路径仅读 L1(Redis)；L1/L2 均未命中才由协调器回源 L3 全量历史。
             buildResult = buildMessages(sid, streamUserId, userInput);
+            buildResult.messages().set(0, new SystemMessage(
+                    augmentRouteInstruction(((SystemMessage) buildResult.messages().get(0)).getText(), routeDecision)));
             buildResult.messages().add(new UserMessage(userInput));
             traceCollector.recordRagInjected(turnId, buildResult.ragInjected());
             traceCollector.recordMemoryInjected(turnId, buildResult.memoryInjected());
@@ -289,6 +365,17 @@ public class ChatService {
 
         // 3. 订阅流式输出
         AssistantBuf assistantBuf = new AssistantBuf();
+        if (routeDecision.route() == QueryRoute.FAST_RAG) {
+            AtomicLong previousChunkAt = new AtomicLong(System.nanoTime());
+            disposableRef[0] = fastRagChatModel.stream(new Prompt(buildResult.messages())).subscribe(
+                    response -> handleFastRagChunk(turnId, response, emitter, assistantBuf, previousChunkAt),
+                    err -> handleStreamError(sid, emitter, turnLifecycle, err, streamMdcSnapshot),
+                    () -> handleStreamCompletion(
+                            sid, userInput, emitter, assistantBuf, buildResult,
+                            streamUserSnapshot, streamUserId, streamMdcSnapshot, turnLifecycle, false)
+            );
+            return sid;
+        }
         //调用大模型流式推理
         TraceContext.setTurnId(turnId);
         try {
@@ -1010,6 +1097,92 @@ public class ChatService {
         }
         buf.full.append(chunk);
         safeSend(emitter, "chunk", chunk);
+    }
+
+    private void handleFastRagChunk(String turnId,
+                                    ChatResponse response,
+                                    SseEmitter emitter,
+                                    AssistantBuf buf,
+                                    AtomicLong previousChunkAt) {
+        String chunk = extractChatResponseText(response);
+        if (chunk == null || chunk.isBlank()) {
+            return;
+        }
+        long now = System.nanoTime();
+        long previous = previousChunkAt.getAndSet(now);
+        long latencyMs = TimeUnit.NANOSECONDS.toMillis(Math.max(0L, now - previous));
+        traceCollector.recordNode(turnId, "fast-rag-stream", "streaming", chunk, latencyMs, "SUCCESS");
+        buf.full.append(chunk);
+        safeSend(emitter, "chunk", chunk);
+    }
+
+    private String extractChatResponseText(ChatResponse response) {
+        if (response == null || response.getResult() == null || response.getResult().getOutput() == null) {
+            return null;
+        }
+        return response.getResult().getOutput().getText();
+    }
+
+    private void handleStreamError(String sid,
+                                   SseEmitter emitter,
+                                   ChatTurnLifecycle turnLifecycle,
+                                   Throwable err,
+                                   Map<String, String> streamMdcSnapshot) {
+        if (streamMdcSnapshot != null) {
+            MDC.setContextMap(streamMdcSnapshot);
+        }
+        try {
+            log.warn("[ChatService] 流式异常 sid={}: {}", sid, err.getMessage());
+        } finally {
+            MDC.clear();
+        }
+        safeError(emitter, err);
+        turnLifecycle.error(err);
+    }
+
+    private void handleStreamCompletion(String sid,
+                                        String userInput,
+                                        SseEmitter emitter,
+                                        AssistantBuf assistantBuf,
+                                        BuildMessagesResult buildResult,
+                                        UserContext streamUserSnapshot,
+                                        Long streamUserId,
+                                        Map<String, String> streamMdcSnapshot,
+                                        ChatTurnLifecycle turnLifecycle,
+                                        boolean updateAgentState) {
+        String full = assistantBuf.full.toString().trim();
+        if (streamUserSnapshot != null) {
+            UserContextHolder.set(streamUserSnapshot);
+        }
+        if (streamMdcSnapshot != null) {
+            MDC.setContextMap(streamMdcSnapshot);
+        }
+        try {
+            ChatMessageDTO userMsg = ChatMessageDTO.of("user", userInput);
+            ChatMessageDTO assistantMsg = full.isBlank() ? null : ChatMessageDTO.of("assistant", full);
+            try {
+                persist(sid, userInput, full);
+                shortTermMemoryService.appendTurnToL1(sid, userMsg, assistantMsg);
+                if (updateAgentState) {
+                    updateAgentStateByRules(streamUserId, sid, assistantBuf.nodes);
+                }
+            } catch (Exception e) {
+                log.error("[ChatService] 持久化失败 sid={}: {}", sid, e.getMessage(), e);
+            }
+            List<SourceRef> sources = SourceRef.from(buildResult.sources());
+            if (!sources.isEmpty()) {
+                safeSend(emitter, "sources", sources);
+            }
+            safeSend(emitter, "done", full);
+            turnLifecycle.success();
+            emitter.complete();
+            triggerLongTermMemoryIngestion(streamUserId, sid, userInput, streamMdcSnapshot);
+            triggerShortTermMaintenance(streamUserSnapshot, streamUserId, sid,
+                    buildResult.skipMaintenanceCompression(), streamMdcSnapshot);
+        } finally {
+            UserContextHolder.clear();
+            MDC.clear();
+        }
     }
 
     /** 与「整段重复」判定配套：过短则不按全文去重，避免误伤模型故意重复的短句。 */

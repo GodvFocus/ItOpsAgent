@@ -29,6 +29,10 @@ public class TurnTrace {
 
     private String status = "RUNNING";
 
+    private String route;
+
+    private String routeReason;
+
     private String ragInjected;
 
     private String memoryInjected;

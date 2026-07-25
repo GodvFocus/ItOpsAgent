@@ -94,6 +94,8 @@ public class TraceFileWriter {
         total += length(trace.getSessionId());
         total += length(trace.getTraceId());
         total += length(trace.getStatus());
+        total += length(trace.getRoute());
+        total += length(trace.getRouteReason());
         total += length(trace.getRagInjected());
         total += length(trace.getMemoryInjected());
         for (TurnTrace.Node node : trace.getNodes()) {
