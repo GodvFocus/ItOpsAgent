@@ -19,11 +19,41 @@ log = logging.getLogger(__name__)
 
 # BGE-M3 向量维度
 _BGE_M3_DIM = 1024
+_READY_UPSERT_FIELDS = [
+    "id",
+    "content",
+    "embedding",
+    "doc_id",
+    "chunk_index",
+    "doc_name",
+    "file_type",
+    "page_number",
+    "token_count",
+    "authority",
+    "doc_created_at",
+    "context_prefix",
+    "contextualized_content",
+    "ready",
+    "created_at",
+    "user_id",
+    "source_type",
+    "superseded",
+]
 
 
 def _escape_milvus_expr(val: str) -> str:
     """转义 Milvus 表达式中字符串值的特殊字符，防止注入/语法错误。"""
     return val.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _normalize_page_number(page: int | None) -> int:
+    """把可选页码归一化为 Milvus 可接受的非空 INT64。
+
+    约定：
+    - 有真实页码时保持原值（PDF/PPTX 等通常为 1-based）
+    - 无页码时写 0，作为“未知页码”哨兵值
+    """
+    return 0 if page is None else int(page)
 
 
 def _ensure_collection(name: str) -> Collection:
@@ -48,6 +78,8 @@ def _ensure_collection(name: str) -> Collection:
         FieldSchema(name="ready", dtype=DataType.BOOL),
         FieldSchema(name="created_at", dtype=DataType.INT64),
         FieldSchema(name="user_id", dtype=DataType.VARCHAR, max_length=64),
+        FieldSchema(name="source_type", dtype=DataType.VARCHAR, max_length=32),
+        FieldSchema(name="superseded", dtype=DataType.BOOL),
     ]
     schema = CollectionSchema(fields=fields, description=f"Fish-Agent knowledge: {name}")
     col = Collection(name=name, schema=schema)
@@ -117,7 +149,7 @@ class MilvusIndexer:
                 "chunk_index": ch.chunk_index,
                 "doc_name": file_name,
                 "file_type": file_type,
-                "page_number": ch.page,
+                "page_number": _normalize_page_number(ch.page),
                 "token_count": ch.token_count,
                 "authority": float(default_authority),
                 "doc_created_at": doc_created_at_ms if doc_created_at_ms is not None else now_ms,
@@ -126,6 +158,8 @@ class MilvusIndexer:
                 "ready": False,
                 "created_at": now_ms,
                 "user_id": user_id or "",
+                "source_type": "manual",
+                "superseded": False,
             }
             rows.append(row)
 
@@ -163,7 +197,7 @@ class MilvusIndexer:
                 # 每次重试都重新查询，确保拿到最新数据
                 results = col.query(
                     expr=f'doc_id == "{escaped_doc_id}"',
-                    output_fields=["id", "ready"],
+                    output_fields=_READY_UPSERT_FIELDS,
                 )
                 for r in results:
                     r["ready"] = True

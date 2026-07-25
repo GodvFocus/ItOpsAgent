@@ -372,7 +372,7 @@ fish:
   # ── RustFS 对象存储（S3 兼容） ──────────────────────────────
   rustfs:
     enabled: ${RUSTFS_ENABLED:true}
-    endpoint: ${RUSTFS_ENDPOINT:http://localhost:9000}
+    endpoint: ${RUSTFS_ENDPOINT:http://localhost:1900}
     access-key: ${RUSTFS_ACCESS_KEY:}
     secret-key: ${RUSTFS_SECRET_KEY:}
     bucket-chat: ${RUSTFS_BUCKET_CHAT:itops-chat}

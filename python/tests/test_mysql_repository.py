@@ -28,6 +28,7 @@ class FakeConnection:
         self.executed: list[tuple[str, tuple[object, ...]]] = []
         self.commits = 0
         self.closed = False
+        self.open = True  # PyMySQL 使用 open 属性判断连接是否存活
 
     def __enter__(self) -> "FakeConnection":
         return self
@@ -46,6 +47,7 @@ class FakeConnection:
 
     def close(self) -> None:
         self.closed = True
+        self.open = False
 
 
 class DocumentMetadataRepositoryTest(unittest.TestCase):

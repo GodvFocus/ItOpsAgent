@@ -1,20 +1,19 @@
-# Fish-Agent Python Worker (v2.2)
+# Fish-Agent Python Worker (v3.0)
 
-异步消费 Redis Stream（默认 `fish:doc:ingest`），从 RustFS `itops-docs` 桶下载原始文件，使用 **PyMuPDF + Tesseract OCR** 解析 PDF（渲染为图片后识别，无论字体编码如何都能正确提取中文），按 token 分块、嵌入后写入 **Elasticsearch**（用户文档 `fish-user-knowledge` / 公有 `fish-public-knowledge`；与 Java 侧 `fish-user-memory` 对话事实索引分离），并更新 MySQL `document_metadata`。
+异步消费 Redis Stream（默认 `fish:doc:ingest`），从 MinIO `itops-docs` 桶下载原始文件，使用 **PyMuPDF + Tesseract OCR** 解析 PDF（渲染为图片后识别，无论字体编码如何都能正确提取中文），按 token 分块、Ollama BGE-M3 嵌入后写入 **Milvus**（用户文档 `itops_user_knowledge` / 公有 `itops_public_knowledge`；与 Java 侧 `itops_user_memory` 对话事实索引分离），并更新 MySQL `document_metadata`。
 
-与 Java 上传链路（v2.1）解耦：仅依赖 Redis / MySQL / MinIO / ES 及一致的环境变量命名。
+与 Java 上传链路解耦：仅依赖 Redis / MySQL / MinIO / Milvus 及一致的环境变量命名。
 
 ## 前置条件
 
 - JDK 侧已完成上传并入队（`document_metadata.status=PENDING`）。
-- **Redis / MySQL / MinIO / ES 四个中间件必须可访问**（本地或远程均可，通过 .env 配置）。
+- **Redis / MySQL / MinIO / Milvus 四个中间件必须可访问**（本地或远程均可，通过 .env 配置）。
 - **Tesseract OCR 引擎 + 简体中文语言包**（Windows 本地开发需手动安装，Docker 镜像已内置）。
 - MySQL 表含 **`chunk_count`** 列：新建库使用仓库内 [`database/sql/itops_agent.sql`](../database/sql/itops_agent.sql)；已有库执行：
   ```sql
-  ALTER TABLE document_metadata ADD COLUMN chunk_count INT NULL COMMENT 'Python Worker 成功写入 ES 的切片数量' AFTER error_msg;
+  ALTER TABLE document_metadata ADD COLUMN chunk_count INT NULL COMMENT 'Python Worker 成功写入 Milvus 的切片数量' AFTER error_msg;
   ```
-- ES `dense_vector` 维度与嵌入模型一致（默认 **1536**，与 `DASHSCOPE_EMBEDDING_DIMENSIONS` 对齐）。
-- Ollama 模式下须选用维度与索引一致的 embedding 模型，否则会写入警告或维度不匹配错误。
+- Ollama 部署了 BGE-M3 或兼容的 embedding 模型（推荐 `bge-m3:latest`，输出 1024 维向量）。
 
 ## 启动方式
 
@@ -75,8 +74,8 @@ cp .env.example .env
 | `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` | Redis 连接（存放 Stream 消息） |
 | `DB_HOST` / `DB_PORT` / `DB_NAME` / `DB_USERNAME` / `DB_PASSWORD` | MySQL 连接（更新 document_metadata 状态） |
 | `RUSTFS_ENDPOINT` / `RUSTFS_ACCESS_KEY` / `RUSTFS_SECRET_KEY` | MinIO 连接（下载原始文件） |
-| `ELASTICSEARCH_URIS` | ES 连接（写入分块数据） |
-| `DASHSCOPE_API_KEY` | 阿里云灵积 API Key（Python 侧调用 embedding） |
+| `MILVUS_URI` | Milvus gRPC 地址（写入切片向量） |
+| `OLLAMA_BASE_URL` | Ollama 服务地址（BGE-M3 embedding） |
 
 > 如果你已有 Java 后端在本地跑着，直接复用 Java 的 `application.yml` 里对应的值即可——两侧命名是对齐的。
 
@@ -98,7 +97,7 @@ python -m fish_worker
 ```bash
 # 检查四个中间件连通性
 curl http://localhost:8091/health
-# → {"redis":"ok","mysql":"ok","elasticsearch":"ok","minio":"ok","status":"ok"}
+# → {"redis":"ok","mysql":"ok","milvus":"ok","minio":"ok","status":"ok"}
 ```
 
 如果返回 `"status":"degraded"`，看具体哪个组件报错，检查 `.env` 配置。
@@ -164,26 +163,28 @@ docker run --rm -p 8091:8091 --env-file ./python/.env fish-agent-worker
 |----|------|
 | MIME | 从 MinIO `GetObject` 响应头读取 `Content-Type`；`application/octet-stream` 且文件名以 `.pdf` 结尾时按 PDF 推断 |
 | PDF解析 | `PyMuPDF` 渲染为 300 DPI 图片 → `pytesseract` OCR (chi_sim+eng) 识别。完全绕过字体编码 |
-| 分块 | `tiktoken` cl100k_base，默认 512 token / 50 overlap，按页分组不跨页合并 |
-| 嵌入 | `FISH_LLM_EMBEDDING_PROVIDER=DASHSCOPE`（批量≤25）或 `OLLAMA`（逐条）；429 / 5xx / 网络异常会指数退避重试，400/401 等确定性错误立即失败 |
-| ES bulk | 默认每批 20 条；任一批失败则任务 `FAILED`，已写入分片不回滚 |
+| 分块 | `tiktoken` cl100k_base，默认 512 token / 50 overlap，支持结构化分块（标题感知）和 flat 滑窗两种策略 |
+| 上下文化 | 可选的上下文前缀注入（Contextual Indexing）：为每个 chunk 加上文档级 LLM 生成摘要前缀，提升语义检索准确率 |
+| 嵌入 | **仅支持 Ollama**（DashScope 已移除），逐条调用 `/api/embeddings`；429 / 5xx / 网络异常会指数退避重试，400/401 等确定性错误立即失败 |
+| Milvus bulk | 默认每批 100 条；任一批失败则任务 `FAILED`；写入时 `ready=False`，全部写入完成后再 `mark_doc_ready` 翻为可见 |
+| 幂等重处理 | 同一 `task_id` 重处理前先 `delete_by_doc_id` 清理旧切片，保证不残留 |
 | 空文本 | 解析结果为空 → `SUCCESS`，`chunk_count=0`，`error_msg` 记录警告 |
 | Stream | `XREADGROUP` + `XAUTOCLAIM`（idle≥120s）+ 处理后 **`XACK`**（含失败任务，避免毒消息死循环） |
 | 处理心跳 | 长任务处于 `PROCESSING` 时会按 `FISH_WORKER_HEARTBEAT_SECONDS` 刷新 `updated_at`，防止 Java 侧孤儿补偿误判 |
-| 状态流转 | `PENDING → PROCESSING → SUCCESS/FAILED`。写 `SUCCESS` 使用状态 CAS；若终态写入失败，会清理本轮已写 ES 分片。无论成败都 XACK。 |
+| 状态流转 | `PENDING → PROCESSING → SUCCESS/FAILED`。写 `SUCCESS` 使用状态 CAS；若终态写入失败，会清理本轮已写 Milvus 切片。无论成败都 XACK。 |
 
 ### 长任务保护与重试
 
 - `FISH_WORKER_HEARTBEAT_SECONDS` 默认 30 秒，建议明显小于 Java 侧孤儿补偿超时时间（当前 Java 默认按 10 分钟级别处理），这样 OCR / embedding 较慢时也能持续证明任务仍在执行。
-- `FISH_WORKER_EMBED_MAX_RETRIES`、`FISH_WORKER_EMBED_BACKOFF_BASE`、`FISH_WORKER_EMBED_BACKOFF_MAX` 控制 embedding HTTP 重试。仅重试 429、5xx 和网络异常；鉴权、参数、维度等确定性错误仍会快速失败并把任务标记为 `FAILED`。
+- `FISH_WORKER_EMBED_MAX_RETRIES`、`FISH_WORKER_EMBED_BACKOFF_BASE`、`FISH_WORKER_EMBED_BACKOFF_MAX` 控制 embedding HTTP 重试。仅重试 429、5xx 和网络异常；鉴权、参数等确定性错误仍会快速失败并把任务标记为 `FAILED`。
 
 ---
 
 ## 与 Java 对齐的配置键
 
-`REDIS_*`、`RUSTFS_*`、`ELASTICSEARCH_*`、`DB_*` / `DB_URL`、`FISH_DOC_INGEST_STREAM`、`MEMORY_USER_INDEX`（Java 对话记忆）、`KNOWLEDGE_USER_INDEX`（≈ `fish.knowledge.user-knowledge-index-name`）、`KNOWLEDGE_PUBLIC_INDEX`（≈ `fish.knowledge.public-index-name`）、`DASHSCOPE_*`、`FISH_LLM_EMBEDDING_PROVIDER`、`OLLAMA_*` 与 [`application.yml`](../src/main/resources/application.yml) 一致。
+`REDIS_*`、`RUSTFS_*`、`MILVUS_*`、`DB_*` / `DB_URL`、`FISH_DOC_INGEST_STREAM`、`OLLAMA_*`、`FISH_LLM_EMBEDDING_PROVIDER` 与 [`application.yml`](../src/main/resources/application.yml) 一致。
 
-Worker 专属调优键包括：`FISH_WORKER_CONCURRENCY`、`FISH_WORKER_CHUNK_SIZE`、`FISH_WORKER_CHUNK_OVERLAP`、`FISH_WORKER_ES_BATCH_SIZE`、`FISH_WORKER_DASHSCOPE_EMBED_BATCH`、`FISH_WORKER_BLOCK_MS`、`FISH_WORKER_HEALTH_PORT`、`FISH_WORKER_HEARTBEAT_SECONDS`、`FISH_WORKER_EMBED_MAX_RETRIES`、`FISH_WORKER_EMBED_BACKOFF_BASE`、`FISH_WORKER_EMBED_BACKOFF_MAX`。
+Worker 专属调优键包括：`FISH_WORKER_CONCURRENCY`、`FISH_WORKER_CHUNK_SIZE`、`FISH_WORKER_CHUNK_OVERLAP`、`FISH_WORKER_BLOCK_MS`、`FISH_WORKER_HEALTH_PORT`、`FISH_WORKER_HEARTBEAT_SECONDS`、`FISH_WORKER_EMBED_MAX_RETRIES`、`FISH_WORKER_EMBED_BACKOFF_BASE`、`FISH_WORKER_EMBED_BACKOFF_MAX`、`FISH_WORKER_MARK_READY_MAX_ATTEMPTS`、`FISH_WORKER_MARK_READY_BACKOFF_BASE`。
 
 ---
 
@@ -231,9 +232,9 @@ redis-cli ping   # 应返回 PONG
 每页约 1-3 秒（300 DPI）。可在 `pdf.py` 中将 `dpi=300` 改为 `dpi=200`
 （速度提升 ~2x，识别率略降但对清晰文档影响不大）。
 
-### Q: DashScope embedding 报维度不匹配
+### Q: Ollama embedding 维度不匹配
 
-检查 `DASHSCOPE_EMBEDDING_DIMENSIONS` 是否与 ES 索引的 `dense_vector.dims` 一致。默认 text-embedding-v2 输出 1536 维。
+确保 Ollama 部署的模型输出维度与 Milvus Collection schema 的 `embedding` 字段一致（BGE-M3 = 1024 维）。如果使用了其他模型，需要更新 Milvus schema 重建索引。
 
 ### Q: 如何调试单个文件
 

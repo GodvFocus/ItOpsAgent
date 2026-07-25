@@ -1,4 +1,4 @@
-# Fish-Agent Python Worker (v2.2) — Redis Stream → OCR PDF → ES
+# Fish-Agent Python Worker — Redis Stream → OCR PDF → Milvus（ES 已移除）
 redis>=5.0
 minio>=7.2
 PyMySQL>=1.1

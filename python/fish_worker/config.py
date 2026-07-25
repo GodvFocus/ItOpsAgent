@@ -1,4 +1,5 @@
 # 环境变量配置 — 与 Java 侧 application.yml 命名完全对齐
+# （DashScope 嵌入已移除，仅保留 Ollama 本地嵌入）
 #
 # 核心库：pydantic-settings ≈ Spring Boot @ConfigurationProperties
 #   - Field(validation_alias="REDIS_HOST")  → 从环境变量 REDIS_HOST 读取
@@ -55,7 +56,7 @@ class Settings(BaseSettings):
     rustfs_bucket_docs: str = Field(default="itops-docs", validation_alias="RUSTFS_BUCKET_DOCS")
 
     # ---- Milvus ----
-    milvus_uri: str = Field(default="milvus-standalone:19530", validation_alias="MILVUS_URI")
+    milvus_uri: str = Field(default="http://localhost:19530", validation_alias="MILVUS_URI")
     milvus_token: str = Field(default="", validation_alias="MILVUS_TOKEN")
     milvus_user_knowledge_collection: str = Field(
         default="itops_user_knowledge", validation_alias="MILVUS_USER_KNOWLEDGE_COLLECTION"
@@ -81,16 +82,9 @@ class Settings(BaseSettings):
     # ---- Redis Stream key ----
     fish_doc_ingest_stream: str = Field(default="fish:doc:ingest", validation_alias="FISH_DOC_INGEST_STREAM")
 
-    # ---- LLM Embedding（与 fish.llm.embedding 对齐）----
+    # ---- LLM Embedding（与 fish.llm.embedding 对齐，仅支持 Ollama）----
     fish_llm_embedding_provider: str = Field(
-        default="DASHSCOPE", validation_alias="FISH_LLM_EMBEDDING_PROVIDER"
-    )
-    dashscope_api_key: str = Field(default="", validation_alias="DASHSCOPE_API_KEY")
-    dashscope_embedding_model: str = Field(
-        default="text-embedding-v2", validation_alias="DASHSCOPE_EMBEDDING_MODEL"
-    )
-    dashscope_embedding_dimensions: int = Field(
-        default=1024, validation_alias="DASHSCOPE_EMBEDDING_DIMENSIONS"
+        default="OLLAMA", validation_alias="FISH_LLM_EMBEDDING_PROVIDER"
     )
     ollama_base_url: str = Field(default="http://localhost:11434", validation_alias="OLLAMA_BASE_URL")
     ollama_embedding_model: str = Field(
@@ -109,9 +103,6 @@ class Settings(BaseSettings):
     )
     fish_worker_table_max_tokens: int = Field(
         default=1024, validation_alias="FISH_WORKER_TABLE_MAX_TOKENS"
-    )
-    fish_worker_dashscope_embed_batch: int = Field(
-        default=25, validation_alias="FISH_WORKER_DASHSCOPE_EMBED_BATCH"
     )
     fish_worker_block_ms: int = Field(default=5000, validation_alias="FISH_WORKER_BLOCK_MS")
     fish_worker_health_port: int = Field(default=8091, validation_alias="FISH_WORKER_HEALTH_PORT")
@@ -144,7 +135,7 @@ class Settings(BaseSettings):
     @field_validator("fish_llm_embedding_provider", mode="before")
     @classmethod
     def _upper_provider(cls, v: Any) -> str:
-        return str(v).strip().upper() if v is not None else "DASHSCOPE"
+        return str(v).strip().upper() if v is not None else "OLLAMA"
 
     @field_validator("fish_worker_chunk_strategy", mode="before")
     @classmethod

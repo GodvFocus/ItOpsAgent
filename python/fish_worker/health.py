@@ -1,16 +1,16 @@
 # 可选的 HTTP /health 端点 — Docker HEALTHCHECK + 运维监控用
 #
-# 探测四项基础设施连通性：Redis / MySQL / Elasticsearch / MinIO
+# 探测四项基础设施连通性：Redis / MySQL / Milvus / MinIO（ES 已移除，改用 Milvus）
 # 全部 ok → 200 {"status":"ok"}
 # 任一不可用 → 503 {"status":"degraded"}
 #
 # 运行方式：后台 daemon 线程（主线程退出时自动终止）
 # 类比 Java：new Thread(() -> server.start()).setDaemon(true).start()
 #
-# TTL 缓存：每次 health check 会新建 4 个连接（Redis/MySQL/ES/MinIO），
+# TTL 缓存：每次 health check 会新建 4 个连接（Redis/MySQL/Milvus/MinIO），
 # Docker HEALTHCHECK 每 30s 一次没问题，但如果有外部负载均衡器高频探测，
 # 10s TTL 缓存可避免连接风暴。
-"""Optional HTTP /health for Docker / ops (checks Redis, MySQL, ES, MinIO reachability)."""
+"""Optional HTTP /health for Docker / ops (checks Redis, MySQL, Milvus, MinIO reachability)."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from typing import Any
 
 import pymysql
 import redis
-from elasticsearch import Elasticsearch
+from pymilvus import connections
 
 from fish_worker.config import Settings
 from fish_worker.storage.minio import DocObjectStore
@@ -38,6 +38,7 @@ def _check_redis(settings: Settings) -> str:
         port=settings.redis_port,
         password=settings.redis_password or None,
         db=settings.redis_database,
+        protocol=2,
     )
     r.ping()
     return "ok"
@@ -54,17 +55,19 @@ def _check_mysql(settings: Settings) -> str:
         conn.close()
 
 
-def _check_es(settings: Settings) -> str:
-    kw: dict[str, Any] = {}
-    if settings.elasticsearch_username:
-        kw["basic_auth"] = (
-            settings.elasticsearch_username,
-            settings.elasticsearch_password or "",
-        )
-    es = Elasticsearch(settings.es_hosts, **kw)
-    if not es.ping():
-        raise RuntimeError("ping failed")
-    return "ok"
+def _check_milvus(settings: Settings) -> str:
+    """连接 Milvus 并 ping 验证连通性。"""
+    connections.connect(
+        alias="_health",
+        uri=settings.milvus_uri,
+        token=settings.milvus_token or None,
+    )
+    try:
+        from pymilvus import utility
+        utility.has_collection("_health_check")
+        return "ok"
+    finally:
+        connections.disconnect(alias="_health")
 
 
 def _check_minio(settings: Settings) -> str:
@@ -96,7 +99,7 @@ def start_health_server(settings: Settings) -> threading.Thread:
         for name, fn in (
             ("redis", lambda: _check_redis(settings)),
             ("mysql", lambda: _check_mysql(settings)),
-            ("elasticsearch", lambda: _check_es(settings)),
+            ("milvus", lambda: _check_milvus(settings)),
             ("minio", lambda: _check_minio(settings)),
         ):
             try:

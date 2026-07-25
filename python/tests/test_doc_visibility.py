@@ -11,8 +11,8 @@ import pytest
 
 def _make_fake_collection(monkeypatch):
     """Mock pymilvus 连接与 Collection，捕获 insert / upsert 参数。"""
-    monkeypatch.setattr("pymilvus.connections.connect", lambda **kw: None)
-    monkeypatch.setattr("pymilvus.utility.has_collection", lambda name: True)
+    monkeypatch.setattr("fish_worker.storage.milvus.connections.connect", lambda **kw: None)
+    monkeypatch.setattr("fish_worker.storage.milvus.utility.has_collection", lambda name: True)
 
     captured_inserts = []
     captured_upserts = []
@@ -34,7 +34,7 @@ def _make_fake_collection(monkeypatch):
         def upsert(self, rows):
             captured_upserts.extend(rows)
 
-    monkeypatch.setattr("pymilvus.Collection", lambda name, **kw: FakeCollection())
+    monkeypatch.setattr("fish_worker.storage.milvus.Collection", lambda name, **kw: FakeCollection())
     return {
         "inserts": captured_inserts,
         "upserts": captured_upserts,
@@ -44,10 +44,10 @@ def _make_fake_collection(monkeypatch):
 
 def _make_indexer(monkeypatch):
     """创建一个不真正连 Milvus 的 MilvusIndexer 实例。"""
-    from fish_worker.storage.milvus import MilvusIndexer
+    monkeypatch.setattr("fish_worker.storage.milvus.connections.connect", lambda **kw: None)
+    monkeypatch.setattr("fish_worker.storage.milvus.utility.has_collection", lambda name: True)
 
-    monkeypatch.setattr("pymilvus.connections.connect", lambda **kw: None)
-    monkeypatch.setattr("pymilvus.utility.has_collection", lambda name: True)
+    from fish_worker.storage.milvus import MilvusIndexer
 
     class FakeSettings:
         milvus_uri = "http://localhost:19530"
@@ -80,14 +80,75 @@ def test_bulk_index_marks_chunks_not_ready(monkeypatch):
     assert all(row.get("ready") is False for row in ctx["inserts"])
 
 
+def test_bulk_index_normalizes_unknown_page_to_zero(monkeypatch):
+    from fish_worker.chunker.text_chunker import TextChunk
+
+    ctx = _make_fake_collection(monkeypatch)
+    indexer = _make_indexer(monkeypatch)
+    chunks = [TextChunk(text="markdown line", chunk_index=0, page=None, token_count=3)]
+
+    indexer.bulk_index_document_chunks(
+        collection_name="fish_user_knowledge",
+        task_id="t-page-none",
+        scope_private=True,
+        user_id="u1",
+        file_name="note.md",
+        file_type="md",
+        chunks=chunks,
+        vectors=[[0.1]],
+        batch_size=10,
+    )
+
+    assert ctx["inserts"], "insert 应至少被调用一次"
+    assert ctx["inserts"][0]["page_number"] == 0
+
+
 def test_mark_doc_ready_upserts_ready_true_for_doc_id(monkeypatch):
     indexer = _make_indexer(monkeypatch)
 
     ctx = _make_fake_collection(monkeypatch)
     # 模拟 query 返回两条该 doc_id 的切片
     ctx["query_results"].extend([
-        {"id": "t1_0", "ready": False},
-        {"id": "t1_1", "ready": False},
+        {
+            "id": "t1_0",
+            "content": "a",
+            "embedding": [0.1],
+            "doc_id": "t1",
+            "chunk_index": 0,
+            "doc_name": "f.pdf",
+            "file_type": "pdf",
+            "page_number": 1,
+            "token_count": 2,
+            "authority": 0.7,
+            "doc_created_at": 1,
+            "context_prefix": "",
+            "contextualized_content": "a",
+            "ready": False,
+            "created_at": 1,
+            "user_id": "u1",
+            "source_type": "manual",
+            "superseded": False,
+        },
+        {
+            "id": "t1_1",
+            "content": "b",
+            "embedding": [0.2],
+            "doc_id": "t1",
+            "chunk_index": 1,
+            "doc_name": "f.pdf",
+            "file_type": "pdf",
+            "page_number": 1,
+            "token_count": 2,
+            "authority": 0.7,
+            "doc_created_at": 1,
+            "context_prefix": "",
+            "contextualized_content": "b",
+            "ready": False,
+            "created_at": 1,
+            "user_id": "u1",
+            "source_type": "manual",
+            "superseded": False,
+        },
     ])
 
     indexer.mark_doc_ready("fish_user_knowledge", "t1")
@@ -96,6 +157,8 @@ def test_mark_doc_ready_upserts_ready_true_for_doc_id(monkeypatch):
     assert len(ctx["upserts"]) == 2
     for row in ctx["upserts"]:
         assert row["ready"] is True
+        assert "content" in row
+        assert "embedding" in row
 
 
 def test_mark_doc_ready_retries_then_raises_when_upsert_keeps_failing(monkeypatch):
@@ -118,7 +181,7 @@ def test_mark_doc_ready_retries_then_raises_when_upsert_keeps_failing(monkeypatc
             attempts["n"] += 1
             raise RuntimeError("Milvus 不可用")
 
-    monkeypatch.setattr("pymilvus.Collection", lambda name, **kw: FailingCollection())
+    monkeypatch.setattr("fish_worker.storage.milvus.Collection", lambda name, **kw: FailingCollection())
 
     with pytest.raises(RuntimeError):
         indexer.mark_doc_ready("fish_user_knowledge", "t1")

@@ -49,6 +49,9 @@ def main() -> int:
         embedder=Embedder(settings),
     )
 
+    # 先预热 embedding 服务，避免 Ollama 尚未就绪时直接开始消费并把任务打成 FAILED。
+    ctx.embedder.warmup()
+
     # 启动 /health HTTP 端点（Docker HEALTHCHECK 指令会定期 GET）
     if settings.fish_worker_health_port > 0:
         start_health_server(settings)

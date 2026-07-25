@@ -1,4 +1,4 @@
-# Fish-Agent Python Worker — PDF OCR ingest via PyMuPDF + Tesseract → Elasticsearch
+# Fish-Agent Python Worker — PDF OCR ingest via PyMuPDF + Tesseract → Milvus
 FROM python:3.11-slim-bookworm
 
 WORKDIR /app

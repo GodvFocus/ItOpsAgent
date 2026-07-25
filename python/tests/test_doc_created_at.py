@@ -63,12 +63,7 @@ def test_docx_parser_extracts_core_properties_created():
 
 # ---------- bulk_index_document_chunks：doc_created_at ----------
 def _make_fake_collection(monkeypatch):
-    """Mock pymilvus 连接与 Collection 插入，捕获 insert 参数。"""
-    # 禁止真实连接
-    monkeypatch.setattr("pymilvus.connections.connect", lambda **kw: None)
-    # 假装所有 collection 都已存在，跳过创建
-    monkeypatch.setattr("pymilvus.utility.has_collection", lambda name: True)
-
+    """Mock milvus 模块级引用，捕获 insert 参数。"""
     captured = []
 
     class FakeCollection:
@@ -81,17 +76,21 @@ def _make_fake_collection(monkeypatch):
         def flush(self):
             pass
 
-    monkeypatch.setattr("pymilvus.Collection", lambda name, **kw: FakeCollection())
+    # 注意：patch 目标必须是 fish_worker.storage.milvus 的模块级引用
+    # （from pymilvus import Collection, connections, utility 已在模块顶部执行，
+    #  直接 patch pymilvus.* 不影响 milvus.py 内部的本地引用）
+    monkeypatch.setattr("fish_worker.storage.milvus.Collection", lambda name, **kw: FakeCollection())
+    monkeypatch.setattr("fish_worker.storage.milvus.connections.connect", lambda **kw: None)
+    monkeypatch.setattr("fish_worker.storage.milvus.utility.has_collection", lambda name: True)
     return captured
 
 
 def _make_indexer(monkeypatch):
     """创建一个不真正连 Milvus 的 MilvusIndexer 实例。"""
-    from fish_worker.storage.milvus import MilvusIndexer
+    monkeypatch.setattr("fish_worker.storage.milvus.connections.connect", lambda **kw: None)
+    monkeypatch.setattr("fish_worker.storage.milvus.utility.has_collection", lambda name: True)
 
-    # 阻止 __init__ 中的真实连接
-    monkeypatch.setattr("pymilvus.connections.connect", lambda **kw: None)
-    monkeypatch.setattr("pymilvus.utility.has_collection", lambda name: True)
+    from fish_worker.storage.milvus import MilvusIndexer
 
     class FakeSettings:
         milvus_uri = "http://localhost:19530"

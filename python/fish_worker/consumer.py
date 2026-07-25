@@ -68,12 +68,14 @@ class StreamConsumer:
 
         # Redis 客户端：decode_responses=False 表示保留 bytes 类型
         # （我们需要手动 decode，因为 Redis Stream 返回格式需要精确控制）
+        # protocol=2：强制 RESP2 协议，兼容 Redis 6 以下服务端
         self._redis = redis.Redis(
             host=self._s.redis_host,
             port=self._s.redis_port,
             password=self._s.redis_password or None,
             db=self._s.redis_database,
             decode_responses=False,
+            protocol=2,
         )
         self._stream = self._s.fish_doc_ingest_stream
         self._group = self._s.fish_worker_consumer_group
@@ -84,6 +86,8 @@ class StreamConsumer:
         # set() = 设为 True, clear() = 设为 False, is_set() = 读取值
         self._running = threading.Event()
         self._running.set()
+        # XAUTOCLAIM 兼容标记：部分 Redis 版本（< 6.2）不支持该命令，首错后不再重复警告
+        self._xautoclaim_supported = True
 
     def ensure_group(self) -> None:
         """创建消费者组（幂等：已存在则忽略 BUSYGROUP 错误）。"""
@@ -105,6 +109,8 @@ class StreamConsumer:
 
     def _xautoclaim_batch(self) -> list[tuple[str, dict[str, str]]]:
         """XAUTOCLAIM：认领其他 consumer 超过 120s 未 ACK 的 idle 消息（进程崩溃恢复）。"""
+        if not self._xautoclaim_supported:
+            return []
         try:
             # 120_000ms = 120s idle 阈值；"0-0" 表示从最早的消息开始认领
             out = self._redis.xautoclaim(
@@ -116,7 +122,11 @@ class StreamConsumer:
                 count=10,
             )
         except redis.ResponseError:
-            log.warning("xautoclaim failed stream=%s group=%s", self._stream, self._group, exc_info=True)
+            self._xautoclaim_supported = False
+            log.warning(
+                "XAUTOCLAIM 不被 Redis 服务端支持（需 >= 6.2），"
+                "已禁用崩溃恢复能力，不影响正常消费",
+            )
             return []
         # xautoclaim 返回 (claimed_ids_list, messages_list)
         if not out or len(out) < 2:
