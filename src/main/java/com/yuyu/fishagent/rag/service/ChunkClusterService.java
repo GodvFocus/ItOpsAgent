@@ -48,8 +48,8 @@ public class ChunkClusterService {
     /**
      * TODO: ES → Milvus 迁移后恢复切片聚类分组功能。
      */
-    public ChunkGroupVO getGroups(String taskId, Long currentUserId, boolean admin) {
-        DocumentMetadata row = loadVisibleSuccessDocument(taskId, currentUserId, admin);
+    public ChunkGroupVO getGroups(String taskId, Long currentUserId, String currentWorkspaceId, boolean admin) {
+        DocumentMetadata row = loadVisibleSuccessDocument(taskId, currentUserId, currentWorkspaceId, admin);
         return new ChunkGroupVO(row.getTaskId(), row.getFileName(),
                 "ES 已迁移至 Milvus，切片聚类暂不可用。", 0, List.of());
     }
@@ -58,16 +58,17 @@ public class ChunkClusterService {
      * TODO: ES → Milvus 迁移后恢复切片列表查询功能。
      */
     public ChunkListVO getChunks(String taskId, Integer groupIndex, String keyword, int page, int size,
-                                 Long currentUserId, boolean admin) {
-        loadVisibleSuccessDocument(taskId, currentUserId, admin);
+                                 Long currentUserId, String currentWorkspaceId, boolean admin) {
+        loadVisibleSuccessDocument(taskId, currentUserId, currentWorkspaceId, admin);
         return new ChunkListVO(taskId, List.of(), 0L);
     }
 
     /**
      * TODO: ES → Milvus 迁移后恢复切片关联卡片查询功能。
      */
-    public List<RelatedCardVO> getRelatedCards(String taskId, Integer chunkIndex, Long currentUserId, boolean admin) {
-        loadVisibleSuccessDocument(taskId, currentUserId, admin);
+    public List<RelatedCardVO> getRelatedCards(String taskId, Integer chunkIndex,
+                                               Long currentUserId, String currentWorkspaceId, boolean admin) {
+        loadVisibleSuccessDocument(taskId, currentUserId, currentWorkspaceId, admin);
         return List.of();
     }
 
@@ -95,7 +96,8 @@ public class ChunkClusterService {
         }
     }
 
-    private DocumentMetadata loadVisibleSuccessDocument(String taskId, Long currentUserId, boolean admin) {
+    private DocumentMetadata loadVisibleSuccessDocument(String taskId, Long currentUserId,
+                                                        String currentWorkspaceId, boolean admin) {
         if (taskId == null || taskId.isBlank()) {
             throw new IllegalArgumentException("taskId 不能为空");
         }
@@ -104,7 +106,11 @@ public class ChunkClusterService {
         if (row == null) {
             throw new ResponseStatusException(NOT_FOUND, "文档不存在");
         }
-        if (!admin && (currentUserId == null || !Objects.equals(currentUserId, row.getUserId()))) {
+        boolean owner = currentUserId != null && Objects.equals(currentUserId, row.getUserId());
+        boolean workspaceVisible = DocumentMetadata.VISIBILITY_WORKSPACE.equalsIgnoreCase(row.getVisibility())
+                && currentWorkspaceId != null
+                && Objects.equals(currentWorkspaceId, row.getWorkspaceId());
+        if (!admin && !owner && !workspaceVisible) {
             throw new ResponseStatusException(FORBIDDEN, "无权查看该文档切片");
         }
         if (!DocumentMetadata.STATUS_SUCCESS.equals(row.getStatus())) {

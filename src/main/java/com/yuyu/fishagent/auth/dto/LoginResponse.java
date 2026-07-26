@@ -16,6 +16,8 @@ public class LoginResponse {
 
     private Long userId;
 
+    private String workspaceId;
+
     private String nickname;
 
     private String role;

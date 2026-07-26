@@ -18,6 +18,8 @@ public class AuthProperties {
     /** Redis 中会话 TTL（秒）。 */
     private long sessionTtlSeconds = 86400;
 
+    private String defaultWorkspaceId = "default";
+
     /**
      * 逗号分隔的白名单路径前缀；匹配到的请求不校验登录。
      * <p>例如：{@code /api/auth/login,/api/auth/register}</p>

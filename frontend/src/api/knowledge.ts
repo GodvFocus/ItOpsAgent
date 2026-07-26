@@ -14,7 +14,9 @@ export interface DocumentMetadataItem {
   taskId: string
   fileName: string
   fileSize: number
-  scopeType: string
+  ownerUserId?: number | null
+  workspaceId?: string | null
+  visibility: string
   status: string
   chunkCount?: number | null
   errorMsg?: string | null
@@ -118,9 +120,9 @@ export async function initMultipartUpload(
   fileName: string,
   fileSize: number,
   contentType: string,
-  scope: 'private' | 'public'
+  scope: 'private' | 'workspace'
 ): Promise<MultipartInitResponse> {
-  const path = scope === 'public' ? '/api/admin/knowledge/upload/init' : '/api/knowledge/upload/init'
+  const path = scope === 'workspace' ? '/api/admin/knowledge/upload/init' : '/api/knowledge/upload/init'
   const r = await authFetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

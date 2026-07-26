@@ -19,8 +19,8 @@ import java.time.LocalDateTime;
 @TableName("document_metadata")
 public class DocumentMetadata {
 
-    public static final String SCOPE_PRIVATE = "PRIVATE";
-    public static final String SCOPE_PUBLIC = "PUBLIC";
+    public static final String VISIBILITY_PRIVATE = "PRIVATE";
+    public static final String VISIBILITY_WORKSPACE = "WORKSPACE";
 
     public static final String STATUS_PENDING = "PENDING";
     public static final String STATUS_PROCESSING = "PROCESSING";
@@ -36,6 +36,9 @@ public class DocumentMetadata {
     @TableField("user_id")
     private Long userId;
 
+    @TableField("workspace_id")
+    private String workspaceId;
+
     @TableField("file_name")
     private String fileName;
 
@@ -45,8 +48,8 @@ public class DocumentMetadata {
     @TableField("minio_path")
     private String minioPath;
 
-    @TableField("scope_type")
-    private String scopeType;
+    @TableField("visibility")
+    private String visibility;
 
     private String status;
 
@@ -62,4 +65,23 @@ public class DocumentMetadata {
 
     @TableField("updated_at")
     private LocalDateTime updatedAt;
+
+    public String getScopeType() {
+        return visibility;
+    }
+
+    public void setScopeType(String scopeType) {
+        this.visibility = normalizeLegacyScope(scopeType);
+    }
+
+    public static String normalizeLegacyScope(String scopeType) {
+        if (scopeType == null || scopeType.isBlank()) {
+            return VISIBILITY_PRIVATE;
+        }
+        String normalized = scopeType.trim().toUpperCase();
+        if ("PUBLIC".equals(normalized)) {
+            return VISIBILITY_WORKSPACE;
+        }
+        return normalized;
+    }
 }

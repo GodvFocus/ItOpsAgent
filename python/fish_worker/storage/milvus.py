@@ -36,6 +36,8 @@ _READY_UPSERT_FIELDS = [
     "ready",
     "created_at",
     "user_id",
+    "workspace_id",
+    "visibility",
     "source_type",
     "superseded",
 ]
@@ -78,6 +80,8 @@ def _ensure_collection(name: str) -> Collection:
         FieldSchema(name="ready", dtype=DataType.BOOL),
         FieldSchema(name="created_at", dtype=DataType.INT64),
         FieldSchema(name="user_id", dtype=DataType.VARCHAR, max_length=64),
+        FieldSchema(name="workspace_id", dtype=DataType.VARCHAR, max_length=64),
+        FieldSchema(name="visibility", dtype=DataType.VARCHAR, max_length=32),
         FieldSchema(name="source_type", dtype=DataType.VARCHAR, max_length=32),
         FieldSchema(name="superseded", dtype=DataType.BOOL),
     ]
@@ -124,6 +128,8 @@ class MilvusIndexer:
         collection_name: str,
         task_id: str,
         scope_private: bool,
+        workspace_id: str,
+        visibility: str,
         user_id: str | None,
         file_name: str,
         file_type: str,
@@ -158,6 +164,8 @@ class MilvusIndexer:
                 "ready": False,
                 "created_at": now_ms,
                 "user_id": user_id or "",
+                "workspace_id": workspace_id or "default",
+                "visibility": visibility or ("PRIVATE" if scope_private else "WORKSPACE"),
                 "source_type": "manual",
                 "superseded": False,
             }

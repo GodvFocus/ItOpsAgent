@@ -1,6 +1,7 @@
 package com.yuyu.fishagent.auth;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.yuyu.fishagent.auth.config.AuthProperties;
 import com.yuyu.fishagent.auth.context.UserContext;
 import com.yuyu.fishagent.auth.session.RedisSessionManager;
 import com.yuyu.fishagent.auth.dto.LoginRequest;
@@ -27,6 +28,7 @@ public class AuthService {
 
     private final SysUserMapper sysUserMapper;
     private final RedisSessionManager redisSessionManager;
+    private final AuthProperties authProperties;
     private final BCryptPasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
 
     /**
@@ -91,9 +93,10 @@ public class AuthService {
      */
     private LoginResponse issueSession(SysUser u) {
         String nick = resolveDisplayNickname(u);
-        UserContext ctx = new UserContext(u.getId(), u.getUsername(), nick, u.getRole());
+        String workspaceId = resolveWorkspaceId();
+        UserContext ctx = new UserContext(u.getId(), workspaceId, u.getUsername(), nick, u.getRole());
         String token = redisSessionManager.createSession(ctx);
-        return new LoginResponse(token, u.getId(), nick, u.getRole());
+        return new LoginResponse(token, u.getId(), workspaceId, nick, u.getRole());
     }
 
     /** 展示用昵称：库中为空时退回用户名，避免前端拿到 null。 */
@@ -103,6 +106,14 @@ public class AuthService {
             return n.trim();
         }
         return u.getUsername();
+    }
+
+    private String resolveWorkspaceId() {
+        String workspaceId = authProperties.getDefaultWorkspaceId();
+        if (workspaceId == null || workspaceId.isBlank()) {
+            return "default";
+        }
+        return workspaceId.trim();
     }
 
     private static void validateCredential(String username, String password) {

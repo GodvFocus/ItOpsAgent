@@ -20,6 +20,7 @@ function readStoredNickname(): string | null {
 export const useAuthStore = defineStore('auth', () => {
   const token = ref<string | null>(localStorage.getItem(TOKEN_KEY))
   const userId = ref<number | null>(null)
+  const workspaceId = ref<string | null>(null)
   const nickname = ref<string | null>(readStoredNickname())
   const role = ref<string | null>(null)
 
@@ -28,9 +29,10 @@ export const useAuthStore = defineStore('auth', () => {
   /**
    * 登录或注册成功后写入会话令牌。
    */
-  function setSession(t: string, uid: number, nick: string | null | undefined, r: string) {
+  function setSession(t: string, uid: number, wid: string | null | undefined, nick: string | null | undefined, r: string) {
     token.value = t
     userId.value = uid
+    workspaceId.value = wid?.trim() || null
     const safeNick = (nick ?? '').trim()
     nickname.value = safeNick.length > 0 ? safeNick : null
     role.value = r
@@ -47,6 +49,7 @@ export const useAuthStore = defineStore('auth', () => {
    */
   function applyProfile(me: LoginResponse) {
     userId.value = me.userId
+    workspaceId.value = me.workspaceId?.trim() || null
     const safeNick = (me.nickname ?? '').trim()
     nickname.value = safeNick.length > 0 ? safeNick : null
     role.value = me.role ?? null
@@ -63,6 +66,7 @@ export const useAuthStore = defineStore('auth', () => {
   function clearSession() {
     token.value = null
     userId.value = null
+    workspaceId.value = null
     nickname.value = null
     role.value = null
     localStorage.removeItem(TOKEN_KEY)
@@ -76,5 +80,5 @@ export const useAuthStore = defineStore('auth', () => {
     return token.value ?? localStorage.getItem(TOKEN_KEY)
   }
 
-  return { token, userId, nickname, role, isLoggedIn, setSession, applyProfile, clearSession, getToken }
+  return { token, userId, workspaceId, nickname, role, isLoggedIn, setSession, applyProfile, clearSession, getToken }
 })

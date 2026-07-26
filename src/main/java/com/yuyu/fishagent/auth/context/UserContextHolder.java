@@ -34,6 +34,11 @@ public final class UserContextHolder {
         return c == null ? null : c.userId();
     }
 
+    public static String currentWorkspaceIdOrNull() {
+        UserContext c = HOLDER.get();
+        return c == null ? null : c.workspaceId();
+    }
+
     /**
      * 移除线程绑定，避免容器线程复用导致串用户。
      */

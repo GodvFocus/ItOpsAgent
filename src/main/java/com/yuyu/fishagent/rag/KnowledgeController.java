@@ -59,11 +59,13 @@ public class KnowledgeController {
         if (uid == null) {
             throw new IllegalStateException("未登录");
         }
+        String workspaceId = UserContextHolder.currentWorkspaceIdOrNull();
         if (file == null || file.isEmpty()) {
             throw new IllegalArgumentException("请选择要上传的文件");
         }
         try (InputStream in = file.getInputStream()) {
-            String taskId = knowledgeIngestionService.ingestUserFile(uid, file.getOriginalFilename(), in, file.getSize(), file.getContentType());
+            String taskId = knowledgeIngestionService.ingestUserFile(
+                    uid, workspaceId, file.getOriginalFilename(), in, file.getSize(), file.getContentType());
             return new KnowledgeUploadResponse(taskId);
         }
     }
@@ -75,11 +77,13 @@ public class KnowledgeController {
         if (uid == null) {
             throw new IllegalStateException("未登录");
         }
+        String workspaceId = UserContextHolder.currentWorkspaceIdOrNull();
         if (file == null || file.isEmpty()) {
             throw new IllegalArgumentException("请选择要上传的文件");
         }
         try (InputStream in = file.getInputStream()) {
-            String taskId = knowledgeIngestionService.ingestAdminFile(uid, file.getOriginalFilename(), in, file.getSize(), file.getContentType());
+            String taskId = knowledgeIngestionService.ingestAdminFile(
+                    uid, workspaceId, file.getOriginalFilename(), in, file.getSize(), file.getContentType());
             return new KnowledgeUploadResponse(taskId);
         }
     }
@@ -90,8 +94,10 @@ public class KnowledgeController {
         if (uid == null) {
             throw new IllegalStateException("未登录");
         }
+        String workspaceId = UserContextHolder.currentWorkspaceIdOrNull();
         MultipartInitResult r = knowledgeIngestionService.initMultipartUpload(uid, req.getFileName(), req.getFileSize(),
-                req.getContentType(), DocumentMetadata.SCOPE_PRIVATE, "user/" + uid + "/");
+                req.getContentType(), workspaceId, DocumentMetadata.VISIBILITY_PRIVATE,
+                "workspace/" + safeWorkspaceSegment(workspaceId) + "/user/" + uid + "/");
         return new MultipartInitResponse(r.taskId(), r.uploadId(), r.minioPath());
     }
 
@@ -102,8 +108,10 @@ public class KnowledgeController {
         if (uid == null) {
             throw new IllegalStateException("未登录");
         }
+        String workspaceId = UserContextHolder.currentWorkspaceIdOrNull();
         MultipartInitResult r = knowledgeIngestionService.initMultipartUpload(uid, req.getFileName(), req.getFileSize(),
-                req.getContentType(), DocumentMetadata.SCOPE_PUBLIC, "admin/");
+                req.getContentType(), workspaceId, DocumentMetadata.VISIBILITY_WORKSPACE,
+                "workspace/" + safeWorkspaceSegment(workspaceId) + "/shared/");
         return new MultipartInitResponse(r.taskId(), r.uploadId(), r.minioPath());
     }
 
@@ -145,7 +153,7 @@ public class KnowledgeController {
         if (uid == null) {
             throw new IllegalStateException("未登录");
         }
-        return knowledgeManageService.listForCurrentUser(uid, page, size);
+        return knowledgeManageService.listForCurrentUser(uid, UserContextHolder.currentWorkspaceIdOrNull(), page, size);
     }
 
     /**
@@ -160,7 +168,7 @@ public class KnowledgeController {
     }
 
     /**
-     * 删除文档任务（本人或管理员）：先清 ES 切片，再删对象存储，最后删 MySQL 记录。
+     * 删除文档任务（本人或管理员）：同步删除对象存储、Milvus 向量与 MySQL 记录。
      */
     @DeleteMapping("/api/knowledge/documents/{taskId}")
     public void deleteDocument(@PathVariable String taskId) {
@@ -175,7 +183,10 @@ public class KnowledgeController {
     @GetMapping("/api/knowledge/documents/{taskId}/chunks/groups")
     public ChunkGroupVO chunkGroups(@PathVariable String taskId) {
         UserContext ctx = UserContextHolder.get();
-        return chunkClusterService.getGroups(taskId, ctx == null ? null : ctx.userId(), isAdmin());
+        return chunkClusterService.getGroups(taskId,
+                ctx == null ? null : ctx.userId(),
+                ctx == null ? null : ctx.workspaceId(),
+                isAdmin());
     }
 
     /**
@@ -189,7 +200,10 @@ public class KnowledgeController {
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int size) {
         UserContext ctx = UserContextHolder.get();
-        return chunkClusterService.getChunks(taskId, groupIndex, keyword, page, size, ctx == null ? null : ctx.userId(), isAdmin());
+        return chunkClusterService.getChunks(taskId, groupIndex, keyword, page, size,
+                ctx == null ? null : ctx.userId(),
+                ctx == null ? null : ctx.workspaceId(),
+                isAdmin());
     }
 
     /**
@@ -198,7 +212,10 @@ public class KnowledgeController {
     @GetMapping("/api/knowledge/chunks/{taskId}/{chunkIndex}/related-cards")
     public List<RelatedCardVO> relatedCards(@PathVariable String taskId, @PathVariable Integer chunkIndex) {
         UserContext ctx = UserContextHolder.get();
-        return chunkClusterService.getRelatedCards(taskId, chunkIndex, ctx == null ? null : ctx.userId(), isAdmin());
+        return chunkClusterService.getRelatedCards(taskId, chunkIndex,
+                ctx == null ? null : ctx.userId(),
+                ctx == null ? null : ctx.workspaceId(),
+                isAdmin());
     }
 
     @GetMapping("/api/knowledge/tasks/{taskId}")
@@ -213,7 +230,11 @@ public class KnowledgeController {
         }
         UserContext ctx = UserContextHolder.get();
         Long uid = ctx == null ? null : ctx.userId();
-        if (!isAdmin() && (uid == null || !uid.equals(row.getUserId()))) {
+        boolean owner = uid != null && uid.equals(row.getUserId());
+        boolean workspaceVisible = ctx != null
+                && Objects.equals(ctx.workspaceId(), row.getWorkspaceId())
+                && DocumentMetadata.VISIBILITY_WORKSPACE.equalsIgnoreCase(row.getVisibility());
+        if (!isAdmin() && !owner && !workspaceVisible) {
             throw new ResponseStatusException(FORBIDDEN, "无权查看该任务");
         }
         return new DocumentTaskStatusResponse(row.getStatus(), row.getErrorMsg());
@@ -252,5 +273,12 @@ public class KnowledgeController {
         if (!isAdmin()) {
             throw new ResponseStatusException(FORBIDDEN, "需要管理员权限");
         }
+    }
+
+    private static String safeWorkspaceSegment(String workspaceId) {
+        if (workspaceId == null || workspaceId.isBlank()) {
+            return "default";
+        }
+        return workspaceId.trim().replace('/', '_').replace('\\', '_');
     }
 }

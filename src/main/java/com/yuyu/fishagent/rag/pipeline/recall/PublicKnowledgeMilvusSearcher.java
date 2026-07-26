@@ -1,5 +1,6 @@
 package com.yuyu.fishagent.rag.pipeline.recall;
 
+import com.yuyu.fishagent.auth.context.UserContextHolder;
 import com.yuyu.fishagent.rag.config.MilvusProperties;
 import com.yuyu.fishagent.rag.config.RagProperties;
 import io.milvus.client.MilvusServiceClient;
@@ -38,13 +39,17 @@ public class PublicKnowledgeMilvusSearcher implements RagRecall.DocumentSearcher
         if (subQueryText == null || subQueryText.isBlank()) {
             return List.of();
         }
+        String workspaceId = currentWorkspaceId();
+        if (workspaceId == null) {
+            return List.of();
+        }
         String collection = milvusProperties.getPublicKnowledgeCollection();
         int limit = Math.max(1, size);
 
         try {
             QueryParam query = QueryParam.newBuilder()
                     .withCollectionName(collection)
-                    .withExpr("ready == true")
+                    .withExpr(String.format("workspace_id == \"%s\" and ready == true", escape(workspaceId)))
                     .withLimit((long) limit)
                     .withOutFields(List.of("id", "content", "doc_id", "chunk_index", "doc_name", "authority"))
                     .build();
@@ -62,6 +67,10 @@ public class PublicKnowledgeMilvusSearcher implements RagRecall.DocumentSearcher
     @Override
     public List<RagRecall.RecallHit> searchByVector(String sessionId, String textToEmbed, int size) {
         if (!ragProperties.getRecall().isVectorLegEnabled()) {
+            return List.of();
+        }
+        String workspaceId = currentWorkspaceId();
+        if (workspaceId == null) {
             return List.of();
         }
         EmbeddingModel embeddingModel = embeddingModelProvider.getIfAvailable();
@@ -88,7 +97,7 @@ public class PublicKnowledgeMilvusSearcher implements RagRecall.DocumentSearcher
                     .withVectorFieldName("embedding")
                     .withTopK(k)
                     .withMetricType(io.milvus.param.MetricType.COSINE)
-                    .withExpr("ready == true")
+                    .withExpr(String.format("workspace_id == \"%s\" and ready == true", escape(workspaceId)))
                     .withParams("{\"nprobe\":" + Math.max(1, milvusProperties.getNprobe()) + "}")
                     .withOutFields(List.of("id", "content", "doc_id", "chunk_index", "doc_name", "authority"))
                     .build();
@@ -110,5 +119,13 @@ public class PublicKnowledgeMilvusSearcher implements RagRecall.DocumentSearcher
             values.add(v);
         }
         return values;
+    }
+
+    private static String currentWorkspaceId() {
+        return UserContextHolder.currentWorkspaceIdOrNull();
+    }
+
+    private static String escape(String value) {
+        return value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 }

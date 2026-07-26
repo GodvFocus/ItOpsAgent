@@ -74,16 +74,16 @@ async function startPolling(taskId: string) {
   }, 2000)
 }
 
-async function uploadSmallFile(file: File, scope: 'private' | 'public') {
+async function uploadSmallFile(file: File, scope: 'private' | 'workspace') {
   const res =
-    scope === 'public'
+    scope === 'workspace'
       ? await knowledgeApi.uploadAdminKnowledge(file)
       : await knowledgeApi.uploadUserKnowledge(file)
   ElMessage.success('文件已上传，正在排队解析')
   await startPolling(res.taskId)
 }
 
-async function uploadLargeFile(file: File, scope: 'private' | 'public') {
+async function uploadLargeFile(file: File, scope: 'private' | 'workspace') {
   const ct = file.type || 'application/octet-stream'
   const init = await knowledgeApi.initMultipartUpload(file.name, file.size, ct, scope)
 
@@ -125,7 +125,7 @@ async function uploadLargeFile(file: File, scope: 'private' | 'public') {
   }
 }
 
-async function doUpload(file: File, scope: 'private' | 'public') {
+async function doUpload(file: File, scope: 'private' | 'workspace') {
   if (props.disabled) return
   try {
     if (file.size <= SMALL_FILE_LIMIT_BYTES) {
@@ -150,7 +150,7 @@ function onPrivateFileChange(uploadFile: UploadFile) {
 function onPublicFileChange(uploadFile: UploadFile) {
   const raw = uploadFile.raw
   if (raw) {
-    void doUpload(raw, 'public')
+    void doUpload(raw, 'workspace')
   }
 }
 </script>

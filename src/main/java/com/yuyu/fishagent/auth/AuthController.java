@@ -71,6 +71,6 @@ public class AuthController {
         if (nick == null || nick.isBlank()) {
             nick = c.username();
         }
-        return new LoginResponse(null, c.userId(), nick, c.role());
+        return new LoginResponse(null, c.userId(), c.workspaceId(), nick, c.role());
     }
 }

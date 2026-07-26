@@ -38,7 +38,8 @@ public class UserKnowledgeMilvusSearcher implements RagRecall.DocumentSearcher {
     @Override
     public List<RagRecall.RecallHit> searchByText(String sessionId, String subQueryText, int size) {
         String uid = currentUserIdString();
-        if (uid == null) {
+        String workspaceId = currentWorkspaceId();
+        if (uid == null || workspaceId == null) {
             return List.of();
         }
         if (subQueryText == null || subQueryText.isBlank()) {
@@ -50,7 +51,8 @@ public class UserKnowledgeMilvusSearcher implements RagRecall.DocumentSearcher {
 
         try {
             // user_id 强制隔离 + 只召回已入库就绪的切片
-            String expr = String.format("user_id == \"%s\" and ready == true", uid);
+            String expr = String.format("user_id == \"%s\" and workspace_id == \"%s\" and ready == true",
+                    uid, escape(workspaceId));
             QueryParam query = QueryParam.newBuilder()
                     .withCollectionName(collection)
                     .withExpr(expr)
@@ -75,7 +77,8 @@ public class UserKnowledgeMilvusSearcher implements RagRecall.DocumentSearcher {
             return List.of();
         }
         String uid = currentUserIdString();
-        if (uid == null) {
+        String workspaceId = currentWorkspaceId();
+        if (uid == null || workspaceId == null) {
             return List.of();
         }
 
@@ -98,7 +101,8 @@ public class UserKnowledgeMilvusSearcher implements RagRecall.DocumentSearcher {
 
         try {
             List<List<Float>> queryVectors = List.of(toFloatList(vector));
-            String expr = String.format("user_id == \"%s\" and ready == true", uid);
+            String expr = String.format("user_id == \"%s\" and workspace_id == \"%s\" and ready == true",
+                    uid, escape(workspaceId));
 
             SearchParam search = SearchParam.newBuilder()
                     .withCollectionName(collection)
@@ -125,6 +129,14 @@ public class UserKnowledgeMilvusSearcher implements RagRecall.DocumentSearcher {
     private static String currentUserIdString() {
         Long id = UserContextHolder.currentUserIdOrNull();
         return id == null ? null : String.valueOf(id);
+    }
+
+    private static String currentWorkspaceId() {
+        return UserContextHolder.currentWorkspaceIdOrNull();
+    }
+
+    private static String escape(String value) {
+        return value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     /**

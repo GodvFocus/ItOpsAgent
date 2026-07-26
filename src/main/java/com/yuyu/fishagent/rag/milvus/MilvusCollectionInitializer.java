@@ -51,7 +51,7 @@ public class MilvusCollectionInitializer {
         }
     }
 
-    private static final List<String> REQUIRED_FIELDS = List.of("source_type", "superseded");
+    private static final List<String> REQUIRED_FIELDS = List.of("workspace_id", "visibility", "source_type", "superseded");
 
     private void ensureCollection(String name) {
         HasCollectionParam has = HasCollectionParam.newBuilder().withCollectionName(name).build();
@@ -139,6 +139,16 @@ public class MilvusCollectionInitializer {
                         .withName("user_id")
                         .withDataType(DataType.VarChar)
                         .withMaxLength(64)
+                        .build(),
+                FieldType.newBuilder()
+                        .withName("workspace_id")
+                        .withDataType(DataType.VarChar)
+                        .withMaxLength(64)
+                        .build(),
+                FieldType.newBuilder()
+                        .withName("visibility")
+                        .withDataType(DataType.VarChar)
+                        .withMaxLength(32)
                         .build(),
                 FieldType.newBuilder()
                         .withName("source_type")

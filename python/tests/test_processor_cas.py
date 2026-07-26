@@ -103,7 +103,7 @@ def _patch_chunk():
 
 def _private_task(task_id: str) -> IngestTask:
     return IngestTask(
-        task_id=task_id, minio_path="docs/a.pdf", scope_type="PRIVATE",
+        task_id=task_id, minio_path="docs/a.pdf", workspace_id="default", visibility="PRIVATE",
         user_id="user-1", file_name="a.pdf",
     )
 
@@ -198,7 +198,7 @@ class IngestProcessorCasTest(unittest.TestCase):
         db = FakeDb(success_cas_returns=1)
         milvus = FakeMilvus()
         task = IngestTask(
-            task_id="task-u", minio_path="docs/a.pdf", scope_type="PUBLIC",
+            task_id="task-u", minio_path="docs/a.pdf", workspace_id="default", visibility="WORKSPACE",
             user_id="admin", file_name="a.pdf",
         )
         with (

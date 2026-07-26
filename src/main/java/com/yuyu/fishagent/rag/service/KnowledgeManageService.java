@@ -4,8 +4,11 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.yuyu.fishagent.rag.dto.DocumentMetadataPageResponse;
 import com.yuyu.fishagent.rag.dto.DocumentMetadataResponse;
+import com.yuyu.fishagent.rag.config.MilvusProperties;
 import com.yuyu.fishagent.rag.entity.DocumentMetadata;
 import com.yuyu.fishagent.rag.mapper.DocumentMetadataMapper;
+import io.milvus.client.MilvusServiceClient;
+import io.milvus.param.dml.DeleteParam;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
@@ -13,6 +16,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.format.DateTimeFormatter;
+import java.util.LinkedHashSet;
+import java.util.List;
 
 import static org.springframework.http.HttpStatus.FORBIDDEN;
 import static org.springframework.http.HttpStatus.NOT_FOUND;
@@ -20,7 +25,7 @@ import static org.springframework.http.HttpStatus.NOT_FOUND;
 /**
  * 知识库任务查询与删除：与 {@link KnowledgeIngestionService}（写入）解耦。
  * <p>删除顺序：RustFS 原文件 → MySQL 元数据。
- * ES 切片已迁移至 Milvus，Python Worker 侧负责 Milvus 写入/删除，Java 侧暂不直接操作 Milvus。</p>
+ * 文档切片现已存入 Milvus，因此删除任务时也需要同步清理对应向量，避免幽灵召回。</p>
  */
 @Slf4j
 @Service
@@ -32,17 +37,21 @@ public class KnowledgeManageService {
     private final DocumentMetadataMapper documentMetadataMapper;
     private final ObjectProvider<RustFsService> rustFsProvider;
     private final ChunkClusterService chunkClusterService;
+    private final ObjectProvider<MilvusServiceClient> milvusClientProvider;
+    private final MilvusProperties milvusProperties;
 
     /**
      * 当前用户可见的上传任务（按更新时间倒序）。
      */
-    public DocumentMetadataPageResponse listForCurrentUser(Long userId, long page, long size) {
+    public DocumentMetadataPageResponse listForCurrentUser(Long userId, String workspaceId, long page, long size) {
         if (userId == null) {
             throw new IllegalStateException("未登录");
         }
         Page<DocumentMetadata> p = new Page<>(Math.max(1, page), Math.min(100, Math.max(1, size)));
         documentMetadataMapper.selectPage(p, Wrappers.<DocumentMetadata>lambdaQuery()
-                .eq(DocumentMetadata::getUserId, userId)
+                .and(q -> q.eq(DocumentMetadata::getUserId, userId)
+                        .or(shared -> shared.eq(DocumentMetadata::getWorkspaceId, workspaceId)
+                                .eq(DocumentMetadata::getVisibility, DocumentMetadata.VISIBILITY_WORKSPACE)))
                 .orderByDesc(DocumentMetadata::getUpdatedAt));
         return toPageResponse(p);
     }
@@ -59,7 +68,7 @@ public class KnowledgeManageService {
 
     /**
      * 按 taskId 删除：本人或管理员。
-     * <p>删除顺序：RustFS 原文件 → MySQL 元数据。Milvus 切片由 Python Worker 侧管理。</p>
+     * <p>删除顺序：RustFS 原文件 → Milvus 切片 → 本地缓存 → MySQL 元数据。</p>
      */
     public void deleteByTaskId(String taskId, Long actorUserId, boolean actorIsAdmin) {
         if (taskId == null || taskId.isBlank()) {
@@ -74,12 +83,12 @@ public class KnowledgeManageService {
             throw new ResponseStatusException(FORBIDDEN, "无权删除该文档");
         }
 
-        // TODO: ES → Milvus 迁移后，Milvus 切片删除由 Python Worker 侧负责
         deleteRustFsQuietly(row);
+        deleteMilvusQuietly(row);
         chunkClusterService.evictClusterCache(row.getTaskId());
         documentMetadataMapper.delete(Wrappers.<DocumentMetadata>lambdaQuery()
                 .eq(DocumentMetadata::getTaskId, row.getTaskId()));
-        log.info("[KnowledgeManage] 已删除文档任务 taskId={}, scope={}", row.getTaskId(), row.getScopeType());
+        log.info("[KnowledgeManage] 已删除文档任务 taskId={}, visibility={}", row.getTaskId(), row.getVisibility());
     }
 
     private void deleteRustFsQuietly(DocumentMetadata row) {
@@ -99,6 +108,50 @@ public class KnowledgeManageService {
         }
     }
 
+    private void deleteMilvusQuietly(DocumentMetadata row) {
+        MilvusServiceClient milvusClient = milvusClientProvider.getIfAvailable();
+        if (milvusClient == null) {
+            log.debug("[KnowledgeManage] Milvus 未启用，跳过向量删除 taskId={}", row.getTaskId());
+            return;
+        }
+        String taskId = row.getTaskId();
+        if (taskId == null || taskId.isBlank()) {
+            return;
+        }
+        for (String collection : resolveTargetCollections(row)) {
+            try {
+                milvusClient.delete(DeleteParam.newBuilder()
+                        .withCollectionName(collection)
+                        .withExpr(String.format("doc_id == \"%s\"", escapeMilvusLiteral(taskId.trim())))
+                        .build());
+            } catch (Exception e) {
+                log.warn("[KnowledgeManage] Milvus 删除失败 collection={}, taskId={}: {}",
+                        collection, taskId, e.getMessage());
+            }
+        }
+    }
+
+    private List<String> resolveTargetCollections(DocumentMetadata row) {
+        String visibility = DocumentMetadata.normalizeLegacyScope(row.getVisibility());
+        LinkedHashSet<String> collections = new LinkedHashSet<>();
+        if (DocumentMetadata.VISIBILITY_PRIVATE.equalsIgnoreCase(visibility)) {
+            collections.add(milvusProperties.getUserKnowledgeCollection());
+        } else if (DocumentMetadata.VISIBILITY_WORKSPACE.equalsIgnoreCase(visibility)) {
+            collections.add(milvusProperties.getPublicKnowledgeCollection());
+        } else {
+            // 兼容脏数据：无法判定时双删，避免残留向量继续被召回。
+            collections.add(milvusProperties.getUserKnowledgeCollection());
+            collections.add(milvusProperties.getPublicKnowledgeCollection());
+        }
+        return collections.stream()
+                .filter(name -> name != null && !name.isBlank())
+                .toList();
+    }
+
+    private static String escapeMilvusLiteral(String value) {
+        return value.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
     private static DocumentMetadataPageResponse toPageResponse(Page<DocumentMetadata> p) {
         var records = p.getRecords().stream()
                 .map(KnowledgeManageService::toResponse)
@@ -111,7 +164,9 @@ public class KnowledgeManageService {
                 m.getTaskId(),
                 m.getFileName(),
                 m.getFileSize() == null ? 0L : m.getFileSize(),
-                m.getScopeType(),
+                m.getUserId(),
+                m.getWorkspaceId(),
+                m.getVisibility(),
                 m.getStatus(),
                 m.getChunkCount(),
                 m.getErrorMsg(),

@@ -8,5 +8,5 @@ package com.yuyu.fishagent.auth.context;
  * @param nickname 展示昵称
  * @param role     角色枚举名（如 USER）
  */
-public record UserContext(Long userId, String username, String nickname, String role) {
+public record UserContext(Long userId, String workspaceId, String username, String nickname, String role) {
 }

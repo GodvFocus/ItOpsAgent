@@ -38,7 +38,7 @@ async function onLogin() {
   loading.value = true
   try {
     const res = await authApi.login(username.value.trim(), password.value)
-    auth.setSession(res.token!, res.userId, res.nickname, res.role)
+    auth.setSession(res.token!, res.userId, res.workspaceId, res.nickname, res.role)
     const redirect = (route.query.redirect as string) || '/chat'
     await router.replace(redirect)
   } catch (e: any) {
@@ -55,7 +55,7 @@ async function onRegister() {
   loading.value = true
   try {
     const res = await authApi.register(username.value.trim(), password.value, nickname.value.trim() || undefined)
-    auth.setSession(res.token!, res.userId, res.nickname, res.role)
+    auth.setSession(res.token!, res.userId, res.workspaceId, res.nickname, res.role)
     await router.replace('/chat')
   } catch (e: any) {
     ElMessage.error(e?.message ?? '注册失败')

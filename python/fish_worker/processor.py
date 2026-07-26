@@ -113,8 +113,8 @@ class IngestProcessor:
             vectors = self._embedder.embed_batch([c.contextualized_text or c.text for c in chunks])
 
             # ---- 步骤 6: 写入 Milvus ----
-            # scope_type=PRIVATE → itops_user_knowledge（个人文档）；PUBLIC → itops_public_knowledge（组织知识）
-            scope_private = task.scope_type.upper() == "PRIVATE"
+            # visibility=PRIVATE → itops_user_knowledge；WORKSPACE → itops_public_knowledge。
+            scope_private = task.visibility.upper() == "PRIVATE"
             collection_name = (
                 self._settings.milvus_user_knowledge_collection
                 if scope_private
@@ -133,6 +133,8 @@ class IngestProcessor:
                 collection_name=collection_name,
                 task_id=task.task_id,
                 scope_private=scope_private,
+                workspace_id=task.workspace_id,
+                visibility=task.visibility,
                 user_id=task.user_id if scope_private else None,
                 file_name=task.file_name or "",
                 file_type=file_type,
@@ -270,21 +272,23 @@ class IngestTask:
         声明实例只允许有这些属性，禁止动态添加属性
         类比 Java 的 final class + 固定字段（但更强：连 __dict__ 都不会创建）
     """
-    __slots__ = ("task_id", "minio_path", "scope_type", "user_id", "file_name", "file_size")
+    __slots__ = ("task_id", "minio_path", "workspace_id", "visibility", "user_id", "file_name", "file_size")
 
     def __init__(
         self,
         *,
         task_id: str,
         minio_path: str,
-        scope_type: str,
+        workspace_id: str,
+        visibility: str,
         user_id: str,
         file_name: str,
         file_size: str | None = None,
     ) -> None:
         self.task_id = task_id
         self.minio_path = minio_path
-        self.scope_type = scope_type
+        self.workspace_id = workspace_id
+        self.visibility = visibility
         self.user_id = user_id
         self.file_name = file_name
         self.file_size = file_size

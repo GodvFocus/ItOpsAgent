@@ -53,7 +53,8 @@ def _fields_to_task(fields: dict[str, str]) -> IngestTask:
     return IngestTask(
         task_id=fields.get("task_id", "").strip(),
         minio_path=fields.get("minio_path", "").strip(),
-        scope_type=fields.get("scope_type", "PRIVATE").strip(),
+        workspace_id=fields.get("workspace_id", "default").strip(),
+        visibility=fields.get("visibility", "PRIVATE").strip(),
         user_id=fields.get("user_id", "").strip(),
         file_name=fields.get("file_name", "").strip(),
         file_size=fields.get("file_size"),

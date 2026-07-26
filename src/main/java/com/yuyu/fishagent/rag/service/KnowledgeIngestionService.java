@@ -36,6 +36,7 @@ public class KnowledgeIngestionService {
     private final DocumentMetadataMapper documentMetadataMapper;
     private final ObjectProvider<StringRedisTemplate> stringRedisTemplateProvider;
     private final KnowledgeProperties knowledgeProperties;
+    private String scopeType;
 
     /**
      * 用户上传私有文档：scope PRIVATE，对象键前缀 {@code user/{userId}/}。
@@ -44,19 +45,25 @@ public class KnowledgeIngestionService {
      * @param size        字节长度（须与流一致）
      * @return {@code task_id}（UUID），供前端轮询与 Stream 追踪
      */
-    public String ingestUserFile(Long userId, String originalFilename, InputStream stream, long size, String contentType) throws Exception {
-        return ingest(userId, originalFilename, stream, size, contentType, DocumentMetadata.SCOPE_PRIVATE, "user/" + userId + "/");
+    public String ingestUserFile(Long userId, String workspaceId, String originalFilename,
+                                 InputStream stream, long size, String contentType) throws Exception {
+        return ingest(userId, workspaceId, originalFilename, stream, size, contentType,
+                DocumentMetadata.VISIBILITY_PRIVATE,
+                "workspace/" + safeWorkspaceSegment(workspaceId) + "/user/" + userId + "/");
     }
 
     /**
      * 管理员上传公共文档：scope PUBLIC，对象键前缀 {@code admin/}。
      */
-    public String ingestAdminFile(Long userId, String originalFilename, InputStream stream, long size, String contentType) throws Exception {
-        return ingest(userId, originalFilename, stream, size, contentType, DocumentMetadata.SCOPE_PUBLIC, "admin/");
+    public String ingestAdminFile(Long userId, String workspaceId, String originalFilename,
+                                  InputStream stream, long size, String contentType) throws Exception {
+        return ingest(userId, workspaceId, originalFilename, stream, size, contentType,
+                DocumentMetadata.VISIBILITY_WORKSPACE,
+                "workspace/" + safeWorkspaceSegment(workspaceId) + "/shared/");
     }
 
-    private String ingest(Long userId, String originalFilename, InputStream stream, long size, String contentType,
-                          String scopeType, String objectKeyPrefix) throws Exception {
+    private String ingest(Long userId, String workspaceId, String originalFilename, InputStream stream,
+                          long size, String contentType, String visibility, String objectKeyPrefix) throws Exception {
         if (userId == null) {
             throw new IllegalArgumentException("userId 不能为空");
         }
@@ -78,10 +85,12 @@ public class KnowledgeIngestionService {
         DocumentMetadata row = new DocumentMetadata();
         row.setTaskId(taskId);
         row.setUserId(userId);
+        row.setWorkspaceId(normalizeWorkspaceId(workspaceId));
         row.setFileName(originalFilename == null || originalFilename.isBlank() ? safeName : originalFilename.trim());
         row.setFileSize(size);
         row.setMinioPath(minioPath);
-        row.setScopeType(scopeType);
+        row.setVisibility(visibility);
+        this.scopeType = visibility;
         row.setStatus(DocumentMetadata.STATUS_PENDING);
         row.setErrorMsg(null);
         row.setCreatedAt(now);
@@ -100,7 +109,7 @@ public class KnowledgeIngestionService {
         }
 
         try {
-            publishStream(taskId, minioPath, scopeType, userId, row.getFileName(), size);
+            publishStream(taskId, minioPath, row.getWorkspaceId(), visibility, userId, row.getFileName(), size);
         } catch (Exception e) {
             log.error("[KnowledgeIngestion] Redis Stream 投递失败 taskId={}: {}", taskId, e.getMessage());
             documentMetadataMapper.update(null, Wrappers.<DocumentMetadata>lambdaUpdate()
@@ -125,7 +134,7 @@ public class KnowledgeIngestionService {
      * <p>约定 {@code uploadId} 与 {@code taskId} 相同（MinIO Java SDK 8.5.x 未暴露 CreateMultipartUpload API，改用 staging + compose）。</p>
      */
     public MultipartInitResult initMultipartUpload(Long userId, String originalFilename, long fileSize, String contentType,
-                                                   String scopeType, String objectKeyPrefix) throws Exception {
+                                                   String workspaceId, String visibility, String objectKeyPrefix) throws Exception {
         if (userId == null) {
             throw new IllegalArgumentException("userId 不能为空");
         }
@@ -149,10 +158,12 @@ public class KnowledgeIngestionService {
         DocumentMetadata row = new DocumentMetadata();
         row.setTaskId(taskId);
         row.setUserId(userId);
+        row.setWorkspaceId(normalizeWorkspaceId(workspaceId));
         row.setFileName(originalFilename == null || originalFilename.isBlank() ? safeName : originalFilename.trim());
         row.setFileSize(fileSize);
         row.setMinioPath(minioPath);
-        row.setScopeType(scopeType);
+        row.setVisibility(visibility);
+        this.scopeType = visibility;
         row.setStatus(DocumentMetadata.STATUS_PENDING);
         row.setErrorMsg(null);
         row.setCreatedAt(now);
@@ -231,7 +242,8 @@ public class KnowledgeIngestionService {
         }
 
         try {
-            publishStream(row.getTaskId(), minioPath, row.getScopeType(), row.getUserId(), row.getFileName(), row.getFileSize());
+            publishStream(row.getTaskId(), minioPath, row.getWorkspaceId(), row.getVisibility(),
+                    row.getUserId(), row.getFileName(), row.getFileSize());
         } catch (Exception e) {
             log.error("[KnowledgeIngestion] multipart 完成后 Stream 投递失败 taskId={}: {}", row.getTaskId(), e.getMessage());
             documentMetadataMapper.update(null, Wrappers.<DocumentMetadata>lambdaUpdate()
@@ -297,7 +309,8 @@ public class KnowledgeIngestionService {
         }
     }
 
-    private void publishStream(String taskId, String minioPath, String scopeType, Long userId, String fileName, long fileSize) {
+    private void publishStream(String taskId, String minioPath, String workspaceId, String visibility,
+                               Long userId, String fileName, long fileSize) {
         StringRedisTemplate redis = stringRedisTemplateProvider.getIfAvailable();
         if (redis == null) {
             throw new IllegalArgumentException("StringRedisTemplate 不可用（请检查 Redis 配置）");
@@ -306,7 +319,8 @@ public class KnowledgeIngestionService {
         Map<String, String> body = new LinkedHashMap<>();
         body.put("task_id", taskId);
         body.put("minio_path", minioPath);
-        body.put("scope_type", scopeType);
+        body.put("workspace_id", normalizeWorkspaceId(workspaceId));
+        body.put("visibility", visibility);
         body.put("user_id", String.valueOf(userId));
         body.put("file_name", fileName == null ? "" : fileName);
         body.put("file_size", String.valueOf(fileSize));
@@ -332,5 +346,16 @@ public class KnowledgeIngestionService {
             return null;
         }
         return s.length() <= max ? s : s.substring(0, max);
+    }
+
+    private static String normalizeWorkspaceId(String workspaceId) {
+        if (workspaceId == null || workspaceId.isBlank()) {
+            return "default";
+        }
+        return workspaceId.trim();
+    }
+
+    private static String safeWorkspaceSegment(String workspaceId) {
+        return normalizeWorkspaceId(workspaceId).replace('/', '_').replace('\\', '_');
     }
 }

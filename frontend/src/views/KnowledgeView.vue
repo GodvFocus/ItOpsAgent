@@ -72,6 +72,13 @@ function formatSize(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`
 }
 
+function visibilityLabel(v: string): string {
+  const normalized = (v ?? '').toUpperCase()
+  if (normalized === 'WORKSPACE') return '工作区'
+  if (normalized === 'PRIVATE') return '私有'
+  return normalized || '-'
+}
+
 function statusType(s: string): 'success' | 'warning' | 'info' | 'danger' {
   const u = (s ?? '').toUpperCase()
   if (u === 'SUCCESS') return 'success'
@@ -157,7 +164,9 @@ function openCardFromChunk(cardId: number) {
         <el-table-column label="大小" width="90">
           <template #default="{ row }">{{ formatSize(row.fileSize) }}</template>
         </el-table-column>
-        <el-table-column prop="scopeType" label="范围" width="88" />
+        <el-table-column label="范围" width="96">
+          <template #default="{ row }">{{ visibilityLabel(row.visibility) }}</template>
+        </el-table-column>
         <el-table-column label="状态" width="110">
           <template #default="{ row }">
             <el-tag :type="statusType(row.status)" size="small">{{ row.status }}</el-tag>
@@ -192,7 +201,7 @@ function openCardFromChunk(cardId: number) {
           </div>
           <div class="mobile-card-meta">
             <span>{{ formatSize(row.fileSize) }}</span>
-            <span>{{ row.scopeType }}</span>
+            <span>{{ visibilityLabel(row.visibility) }}</span>
             <span>{{ row.chunkCount ?? '—' }} 切片</span>
           </div>
           <div class="mobile-card-actions">
