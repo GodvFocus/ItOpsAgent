@@ -2,26 +2,24 @@
  * 与后端 ChatController 的 HTTP / SSE 通信封装。
  *
  * 设计取舍：
- *  - 使用原生 fetch + ReadableStream 而不是 EventSource：
- *      1. EventSource 仅支持 GET，无法携带 JSON body；
- *      2. EventSource 无法手动 abort，本应用需要"取消生成"按钮；
- *      3. 自己解析 SSE 帧成本极低，且更可控。
- *  - 与后端 plan §4.5 约定的事件类型：
- *      event: chunk → token 增量
- *      event: tool  → 工具调用提示
- *      event: done  → 流结束
- *      event: error → 错误信息
+ * - 使用原生 fetch + ReadableStream，而不是 EventSource。
+ * - `answer` 事件承载结构化回答，`chunk` 仍用于流式即时反馈。
  */
 
-import type { ChatMessage, SessionInfo, SourceRef } from '@/types/chat'
-import { apiUrl, authFetch } from './http'
+import type {
+  ChatMessage,
+  SessionInfo,
+  SourceRef,
+  StructuredAnswer
+} from '@/types/chat'
+import { authFetch } from './http'
 
 export interface SseHandlers {
   onChunk?: (delta: string) => void
   onTool?: (toolName: string, payload?: string) => void
   onSession?: (sessionId: string) => void
-  /** 答案出处引用 [v6.4]：在 done 前下发，data 为 SourceRef[] 的 JSON。 */
   onSources?: (sources: SourceRef[]) => void
+  onAnswer?: (answer: StructuredAnswer) => void
   onDone?: () => void
   onError?: (msg: string) => void
 }
@@ -32,16 +30,11 @@ export interface StreamOptions {
   signal?: AbortSignal
 }
 
-/** 单个 SSE 事件 */
 interface SseEvent {
   event: string
   data: string
 }
 
-/**
- * 将原始流按 SSE 协议（双换行分帧）切成事件。
- * SSE 行格式：{@code event: xxx} / {@code data: yyy} / 空行结束一帧。
- */
 async function* parseSse(reader: ReadableStreamDefaultReader<Uint8Array>): AsyncGenerator<SseEvent> {
   const decoder = new TextDecoder('utf-8')
   let buffer = ''
@@ -80,9 +73,6 @@ function parseFrame(raw: string): SseEvent | null {
   return { event, data: dataLines.join('\n') }
 }
 
-/**
- * 发起一次流式对话。返回的 Promise 在流结束 / 出错 / 被 abort 时 resolve。
- */
 export async function streamChat(opts: StreamOptions, handlers: SseHandlers): Promise<void> {
   let resp: Response
   try {
@@ -136,7 +126,7 @@ export async function streamChat(opts: StreamOptions, handlers: SseHandlers): Pr
             toolName = parsed?.name ?? ev.data
             payload = parsed?.payload
           } catch {
-            // 后端若直接 emit 纯字符串，data 即工具名
+            /* ignore */
           }
           handlers.onTool?.(toolName, payload)
           break
@@ -144,15 +134,20 @@ export async function streamChat(opts: StreamOptions, handlers: SseHandlers): Pr
         case 'session':
           handlers.onSession?.(ev.data)
           break
-        case 'sources': {
-          // [v6.4] 答案出处：data 为 SourceRef[] JSON；解析失败不阻塞流
+        case 'sources':
           try {
             handlers.onSources?.(JSON.parse(ev.data) as SourceRef[])
           } catch {
             /* ignore */
           }
           break
-        }
+        case 'answer':
+          try {
+            handlers.onAnswer?.(JSON.parse(ev.data) as StructuredAnswer)
+          } catch {
+            /* ignore */
+          }
+          break
         case 'done':
           handlers.onDone?.()
           return

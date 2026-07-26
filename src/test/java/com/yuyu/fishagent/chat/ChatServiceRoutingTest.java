@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yuyu.fishagent.agent.ChatAgent;
 import com.yuyu.fishagent.agent.config.AgentProperties;
 import com.yuyu.fishagent.agent.tool.result.ToolResultGovernor;
+import com.yuyu.fishagent.chat.answer.EvidenceAssembler;
 import com.yuyu.fishagent.chat.history.ChatMemoryStore;
 import com.yuyu.fishagent.chat.router.QueryRouter;
 import com.yuyu.fishagent.chat.router.RouteDecision;
@@ -136,6 +137,7 @@ class ChatServiceRoutingTest {
                 activeChatModelContext,
                 new TraceCollector(new TraceProperties()),
                 traceFileWriter,
-                mock(ToolResultGovernor.class));
+                mock(ToolResultGovernor.class),
+                mock(EvidenceAssembler.class));
     }
 }

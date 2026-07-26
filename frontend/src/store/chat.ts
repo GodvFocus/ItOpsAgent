@@ -7,15 +7,10 @@ import {
   renameSession,
   streamChat
 } from '@/api/chat'
-import type { ChatMessage, SessionInfo } from '@/types/chat'
+import type { ChatMessage, SessionInfo, StructuredAnswer } from '@/types/chat'
 
 /**
  * 会话与消息状态中心。
- *
- * 关注点：
- *  - 单一活跃会话：activeSid。切换会话时按需懒加载历史。
- *  - 流式追加：当前流期间把增量 chunk 拼到末尾的 assistant 气泡，懒生成。
- *  - 中止：abortController 持有当前请求，UI 上"停止生成"调 cancel。
  */
 export const useChatStore = defineStore('chat', () => {
   const sessions = ref<SessionInfo[]>([])
@@ -27,6 +22,17 @@ export const useChatStore = defineStore('chat', () => {
   let abortController: AbortController | null = null
 
   const messages = computed<ChatMessage[]>(() => messagesBySid.value[activeSid.value] ?? [])
+
+  function normalizeMessage(msg: ChatMessage): ChatMessage {
+    if (!msg.structuredAnswer) {
+      return msg
+    }
+    return {
+      ...msg,
+      content: msg.structuredAnswer.renderedMarkdown || msg.content,
+      sources: msg.sources ?? msg.structuredAnswer.evidences
+    }
+  }
 
   async function refreshSessions(): Promise<void> {
     try {
@@ -43,7 +49,7 @@ export const useChatStore = defineStore('chat', () => {
     if (messagesBySid.value[sid]) return
     try {
       const history = await getHistory(sid)
-      messagesBySid.value = { ...messagesBySid.value, [sid]: history }
+      messagesBySid.value = { ...messagesBySid.value, [sid]: history.map(normalizeMessage) }
     } catch (e: any) {
       errorMsg.value = e?.message ?? '加载历史失败'
     }
@@ -78,11 +84,10 @@ export const useChatStore = defineStore('chat', () => {
 
   function appendMessage(sid: string, msg: ChatMessage): void {
     const list = messagesBySid.value[sid] ? [...messagesBySid.value[sid]] : []
-    list.push(msg)
+    list.push(normalizeMessage(msg))
     messagesBySid.value = { ...messagesBySid.value, [sid]: list }
   }
 
-  /** 在末尾保证存在一条 assistant 占位气泡；若末尾不是 assistant 则新建。 */
   function ensureAssistantTail(sid: string): void {
     const list = messagesBySid.value[sid]
     if (!list || list.length === 0 || list[list.length - 1].role !== 'assistant') {
@@ -99,15 +104,22 @@ export const useChatStore = defineStore('chat', () => {
     messagesBySid.value = { ...messagesBySid.value, [sid]: [...list] }
   }
 
-  /** 移除末尾内容为空的 assistant 气泡（流结束/出错后清理"正在思考…"占位）。 */
   function trimEmptyAssistantTail(sid: string): void {
     const list = messagesBySid.value[sid]
     if (!list || list.length === 0) return
     const last = list[list.length - 1]
     if (last.role === 'assistant' && (!last.content || !last.content.trim())) {
-      const next = list.slice(0, -1)
-      messagesBySid.value = { ...messagesBySid.value, [sid]: next }
+      messagesBySid.value = { ...messagesBySid.value, [sid]: list.slice(0, -1) }
     }
+  }
+
+  function applyStructuredAnswer(sid: string, answer: StructuredAnswer): void {
+    ensureAssistantTail(sid)
+    updateLastAssistant(sid, (msg) => {
+      msg.structuredAnswer = answer
+      msg.sources = answer.evidences
+      msg.content = answer.renderedMarkdown || msg.content
+    })
   }
 
   async function send(text: string): Promise<void> {
@@ -115,10 +127,8 @@ export const useChatStore = defineStore('chat', () => {
     if (!content || streaming.value) return
     errorMsg.value = ''
 
-    // sessionId 为空时由后端在响应里通过 event: session 推回真实 sid
     const apiSid = activeSid.value
     const pendingSid = apiSid || '__pending__'
-    // 新会话立即切到占位 sid，让 messages computed 能读到刚写入的气泡
     if (!apiSid) {
       activeSid.value = '__pending__'
     }
@@ -131,7 +141,6 @@ export const useChatStore = defineStore('chat', () => {
     streaming.value = true
     abortController = new AbortController()
 
-    // 保持 '' 表示「尚未拿到后端真实 sid」，供 onSession 的 guard 使用
     let assignedSid = apiSid
 
     try {
@@ -150,15 +159,13 @@ export const useChatStore = defineStore('chat', () => {
           },
           onChunk: (delta) => {
             const sid = activeSid.value
-            // 懒占位：若末尾不是 assistant（如刚出现过 tool 气泡），先补一条
             ensureAssistantTail(sid)
-            updateLastAssistant(sid, (m) => {
-              m.content += delta
+            updateLastAssistant(sid, (msg) => {
+              msg.content += delta
             })
           },
           onTool: (name, payload) => {
             const sid = activeSid.value
-            // 工具调用前若当前 assistant 气泡仍是空（tool 在第一段输出之前发生），先把它干掉
             trimEmptyAssistantTail(sid)
             appendMessage(sid, {
               role: 'tool',
@@ -166,16 +173,16 @@ export const useChatStore = defineStore('chat', () => {
               content: payload ?? '',
               createdAt: Date.now()
             })
-            // 注意：不再立刻 push 空 assistant 气泡，
-            // 后续 chunk 来时由 ensureAssistantTail 懒生成。
           },
-          // [v6.4] 答案出处：done 前下发，挂到当前 assistant 气泡
           onSources: (sources) => {
             const sid = activeSid.value
             ensureAssistantTail(sid)
-            updateLastAssistant(sid, (m) => {
-              m.sources = sources
+            updateLastAssistant(sid, (msg) => {
+              msg.sources = sources
             })
+          },
+          onAnswer: (answer) => {
+            applyStructuredAnswer(activeSid.value, answer)
           },
           onError: (msg) => {
             errorMsg.value = msg
@@ -184,16 +191,13 @@ export const useChatStore = defineStore('chat', () => {
       )
     } finally {
       const sid = assignedSid || pendingSid
-      // 收尾：若末尾仍是空 assistant（出错 / 取消 / 模型只调工具不回话），删掉避免界面悬挂"正在思考…"
       trimEmptyAssistantTail(sid)
-      // 流失败且从未拿到真实 sid：清理占位，回到欢迎态
       if (!assignedSid) {
-        delete messagesBySid.value['__pending__']
+        delete messagesBySid.value.__pending__
         activeSid.value = ''
       }
       streaming.value = false
       abortController = null
-      // 流结束后刷新一次会话列表（更新 updatedAt / 标题）
       await refreshSessions()
     }
   }
@@ -204,7 +208,6 @@ export const useChatStore = defineStore('chat', () => {
     streaming.value = false
   }
 
-  /** 组件卸载/停用时调用：释放网络资源并重置流式状态，避免 UI 锁死。 */
   function cleanup(): void {
     if (abortController) {
       abortController.abort()

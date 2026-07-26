@@ -1,17 +1,21 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { marked } from 'marked'
 import hljs from 'highlight.js'
 import { ElMessage } from 'element-plus'
-import { Tools, DocumentCopy, Check, ArrowDown, ArrowUp } from '@element-plus/icons-vue'
-import type { ChatMessage, SourceRef } from '@/types/chat'
+import {
+  Tools,
+  DocumentCopy,
+  Check,
+  ArrowDown,
+  ArrowUp
+} from '@element-plus/icons-vue'
+import type { ChatMessage, SourceRef, StructuredAnswerItem, StructuredAnswerStep } from '@/types/chat'
 import { formatRelativeTime } from '@/utils/time'
 
 const props = defineProps<{
   msg: ChatMessage
-  /** 是否是消息列表的最后一条（用于流式光标判断） */
   isLast?: boolean
-  /** 当前是否处于流式中 */
   streaming?: boolean
 }>()
 
@@ -31,13 +35,15 @@ renderer.code = ({ text, lang }: { text: string; lang?: string }) => {
 const isUser = computed(() => props.msg.role === 'user')
 const isTool = computed(() => props.msg.role === 'tool')
 const isAssistant = computed(() => !isUser.value && !isTool.value)
+const structuredAnswer = computed(() => props.msg.structuredAnswer ?? null)
+const hasStructuredAnswer = computed(() => isAssistant.value && !!structuredAnswer.value)
+const displaySources = computed(() => structuredAnswer.value?.evidences ?? props.msg.sources ?? [])
 
 const html = computed(() => {
   if (!props.msg.content) return ''
   return marked.parse(props.msg.content, { renderer }) as string
 })
 
-/** tool payload 若是 JSON 字符串则美化显示，否则原样。 */
 const toolPayload = computed(() => {
   if (!isTool.value) return ''
   const raw = props.msg.content
@@ -51,6 +57,8 @@ const toolPayload = computed(() => {
 })
 
 const toolExpanded = ref(false)
+const copied = ref(false)
+const selectedEvidenceId = ref<string>('')
 
 const friendlyToolName = computed(() => {
   const name = props.msg.toolName || 'unknown'
@@ -63,38 +71,65 @@ const friendlyToolName = computed(() => {
   return map[name] || name
 })
 
-/** 是否给 assistant 气泡末尾追加流式光标。仅当：是最后一条 && 正在流 && 是 assistant。 */
 const showCursor = computed(
-  () => isAssistant.value && props.isLast === true && props.streaming === true
+  () => isAssistant.value && props.isLast === true && props.streaming === true && !hasStructuredAnswer.value
 )
 
-/** 答案出处引用 [v6.4]，仅 assistant 气泡渲染。 */
-const sources = computed(() => props.msg.sources ?? [])
-
-/** 分组顺序与中文标题；每组最多展示 MAX_PER_GROUP 条，超出显示 +N。 */
-const SOURCE_GROUPS: Array<{ kind: SourceRef['kind']; title: string }> = [
-  { kind: 'DOC', title: '笔记' },
-  { kind: 'CARD', title: '卡片' },
-  { kind: 'PUBLIC', title: '公开' },
-  { kind: 'MEMORY', title: '记忆' }
-]
-const MAX_PER_GROUP = 2
-const groupedSources = computed(() => {
-  const list = props.msg.sources ?? []
-  return SOURCE_GROUPS.map((g) => {
-    const items = list.filter((s) => (s.kind ?? 'DOC') === g.kind)
-    return {
-      kind: g.kind,
-      title: g.title,
-      items: items.slice(0, MAX_PER_GROUP),
-      overflow: Math.max(0, items.length - MAX_PER_GROUP)
+const sourceMap = computed(() => {
+  const map = new Map<string, SourceRef>()
+  for (const source of displaySources.value) {
+    if (source.evidenceId) {
+      map.set(source.evidenceId, source)
     }
-  }).filter((g) => g.items.length > 0)
+  }
+  return map
 })
 
-const copied = ref(false)
+const activeEvidence = computed(() => {
+  if (!displaySources.value.length) return null
+  if (selectedEvidenceId.value && sourceMap.value.has(selectedEvidenceId.value)) {
+    return sourceMap.value.get(selectedEvidenceId.value) ?? null
+  }
+  return displaySources.value[0]
+})
+
+watch(
+  displaySources,
+  (sources) => {
+    if (!sources.length) {
+      selectedEvidenceId.value = ''
+      return
+    }
+    if (!selectedEvidenceId.value || !sourceMap.value.has(selectedEvidenceId.value)) {
+      selectedEvidenceId.value = sources[0].evidenceId ?? ''
+    }
+  },
+  { immediate: true }
+)
+
+function evidenceKindLabel(kind?: SourceRef['kind']): string {
+  const map: Record<string, string> = {
+    DOC: '笔记',
+    CARD: '卡片',
+    PUBLIC: '公开',
+    MEMORY: '记忆'
+  }
+  return map[kind ?? 'DOC'] || '证据'
+}
+
+function formatEvidenceRefs(ids: string[]): string[] {
+  return ids?.filter(Boolean) ?? []
+}
+
+function selectEvidence(id?: string): void {
+  if (!id) return
+  selectedEvidenceId.value = id
+}
+
 async function copy() {
-  const text = isTool.value ? toolPayload.value : props.msg.content
+  const text = isTool.value
+    ? toolPayload.value
+    : (structuredAnswer.value?.renderedMarkdown || props.msg.content)
   if (!text) return
   try {
     await navigator.clipboard.writeText(text)
@@ -105,9 +140,6 @@ async function copy() {
   }
 }
 
-/**
- * v-html 渲染出的代码块无法绑定 Vue 事件，使用事件委托处理单块复制。
- */
 function handleMarkdownClick(e: MouseEvent) {
   const target = e.target as HTMLElement
   if (!target.classList.contains('code-copy-btn')) return
@@ -123,12 +155,16 @@ function handleMarkdownClick(e: MouseEvent) {
     ElMessage.warning('复制失败')
   })
 }
+
+function itemText(item: StructuredAnswerItem | StructuredAnswerStep): string {
+  if (item.title && item.detail) return `${item.title}：${item.detail}`
+  return item.title || item.detail
+}
 </script>
 
 <template>
   <div class="row" :class="{ user: isUser, tool: isTool }">
     <div class="bubble" :class="{ user: isUser, tool: isTool, assistant: isAssistant }">
-      <!-- 工具气泡 -->
       <template v-if="isTool">
         <div class="tool-card">
           <div class="tool-badge">
@@ -149,13 +185,139 @@ function handleMarkdownClick(e: MouseEvent) {
         </div>
       </template>
 
-      <!-- 用户气泡 -->
       <div v-else-if="isUser" class="plain">{{ msg.content }}</div>
 
-      <!-- 助手气泡 -->
       <template v-else>
+        <div v-if="hasStructuredAnswer" class="structured-answer">
+          <section class="answer-section">
+            <div class="section-title">判断</div>
+            <div class="section-body">{{ structuredAnswer?.judgement.summary }}</div>
+            <div
+              v-if="structuredAnswer?.judgement.evidenceIds?.length"
+              class="evidence-links"
+            >
+              <button
+                v-for="id in formatEvidenceRefs(structuredAnswer!.judgement.evidenceIds)"
+                :key="id"
+                class="evidence-ref"
+                type="button"
+                @click="selectEvidence(id)"
+              >
+                {{ id }}
+              </button>
+            </div>
+          </section>
+
+          <section v-if="structuredAnswer?.possibleCauses?.length" class="answer-section">
+            <div class="section-title">可能原因</div>
+            <ol class="answer-list">
+              <li
+                v-for="(item, index) in structuredAnswer!.possibleCauses"
+                :key="`cause-${index}`"
+              >
+                <div class="section-body">{{ itemText(item) }}</div>
+                <div v-if="item.evidenceIds.length" class="evidence-links">
+                  <button
+                    v-for="id in item.evidenceIds"
+                    :key="id"
+                    class="evidence-ref"
+                    type="button"
+                    @click="selectEvidence(id)"
+                  >
+                    {{ id }}
+                  </button>
+                </div>
+              </li>
+            </ol>
+          </section>
+
+          <section v-if="structuredAnswer?.steps?.length" class="answer-section">
+            <div class="section-title">建议步骤</div>
+            <ol class="answer-list">
+              <li
+                v-for="(step, index) in structuredAnswer!.steps"
+                :key="`step-${index}`"
+              >
+                <div class="section-body">{{ itemText(step) }}</div>
+                <div v-if="step.evidenceIds.length" class="evidence-links">
+                  <button
+                    v-for="id in step.evidenceIds"
+                    :key="id"
+                    class="evidence-ref"
+                    type="button"
+                    @click="selectEvidence(id)"
+                  >
+                    {{ id }}
+                  </button>
+                </div>
+              </li>
+            </ol>
+          </section>
+
+          <section v-if="structuredAnswer?.riskWarnings?.length" class="answer-section">
+            <div class="section-title">风险提示</div>
+            <ul class="answer-list bullet">
+              <li
+                v-for="(item, index) in structuredAnswer!.riskWarnings"
+                :key="`risk-${index}`"
+              >
+                <div class="section-body">{{ itemText(item) }}</div>
+                <div v-if="item.evidenceIds.length" class="evidence-links">
+                  <button
+                    v-for="id in item.evidenceIds"
+                    :key="id"
+                    class="evidence-ref"
+                    type="button"
+                    @click="selectEvidence(id)"
+                  >
+                    {{ id }}
+                  </button>
+                </div>
+              </li>
+            </ul>
+          </section>
+
+          <section v-if="structuredAnswer?.missingInformation?.length" class="answer-section">
+            <div class="section-title">缺失信息</div>
+            <ul class="answer-list bullet">
+              <li
+                v-for="(item, index) in structuredAnswer!.missingInformation"
+                :key="`missing-${index}`"
+              >
+                <div class="section-body">{{ item }}</div>
+              </li>
+            </ul>
+          </section>
+
+          <section v-if="displaySources.length" class="answer-section evidence-section">
+            <div class="section-title">证据</div>
+            <div class="evidence-grid">
+              <button
+                v-for="source in displaySources"
+                :key="source.evidenceId || source.label"
+                class="source-chip"
+                :class="{ active: (activeEvidence?.evidenceId || '') === (source.evidenceId || '') }"
+                type="button"
+                @click="selectEvidence(source.evidenceId)"
+              >
+                <span class="chip-id">{{ source.evidenceId || 'E?' }}</span>
+                <span class="chip-label">{{ source.label }}</span>
+              </button>
+            </div>
+            <div v-if="activeEvidence" class="evidence-card">
+              <div class="evidence-head">
+                <span class="chip-id">{{ activeEvidence.evidenceId || 'E?' }}</span>
+                <span class="evidence-kind">{{ evidenceKindLabel(activeEvidence.kind) }}</span>
+                <span v-if="activeEvidence.timeText" class="evidence-time">{{ activeEvidence.timeText }}</span>
+              </div>
+              <div class="evidence-label">{{ activeEvidence.label }}</div>
+              <div class="evidence-snippet">{{ activeEvidence.snippet || '暂无片段预览' }}</div>
+            </div>
+          </section>
+        </div>
+
         <div
-          v-if="msg.content"
+          v-else-if="msg.content"
           class="markdown-body"
           :class="{ streaming: showCursor }"
           v-html="html"
@@ -167,27 +329,19 @@ function handleMarkdownClick(e: MouseEvent) {
           <span class="dot" />
         </div>
 
-        <!-- 答案出处 [v6.4]：按 kind 分组（笔记/卡片/公开/记忆），chip 只显示名称，
-             snippet 收进 hover tooltip；记忆组最弱化。出处是辅助，不喧宾夺主。 -->
-        <div v-if="sources.length" class="sources">
-          <div v-for="g in groupedSources" :key="g.kind" class="source-group">
-            <span class="group-title">
-              {{ g.title }}<span v-if="g.overflow > 0" class="group-overflow"> +{{ g.overflow }}</span>
-            </span>
-            <div class="source-chips">
-              <span
-                v-for="(s, i) in g.items"
-                :key="i"
-                class="source-chip"
-                :class="{ memory: s.memory }"
-                :title="s.snippet || s.label"
-              >{{ s.label }}<span v-if="s.timeText" class="chip-time"> · {{ s.timeText }}</span></span>
-            </div>
-          </div>
+        <div v-if="!hasStructuredAnswer && displaySources.length" class="sources">
+          <button
+            v-for="source in displaySources"
+            :key="source.evidenceId || source.label"
+            class="source-chip"
+            type="button"
+          >
+            <span class="chip-id">{{ source.evidenceId || 'E?' }}</span>
+            <span class="chip-label">{{ source.label }}</span>
+          </button>
         </div>
       </template>
 
-      <!-- 复制按钮（仅非用户气泡 & 有内容时显示） -->
       <button
         v-if="!isUser && (msg.content || toolPayload)"
         class="copy-btn"
@@ -255,6 +409,139 @@ function handleMarkdownClick(e: MouseEvent) {
   max-width: 85%;
   padding: 12px 14px;
   box-shadow: var(--shadow-sm);
+}
+
+.structured-answer {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.answer-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.section-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+}
+
+.section-body {
+  white-space: pre-wrap;
+  line-height: 1.7;
+}
+
+.answer-list {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.answer-list.bullet {
+  padding-left: 18px;
+}
+
+.evidence-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.evidence-ref,
+.source-chip {
+  border: 1px solid var(--border);
+  background: var(--bg-sunken);
+  color: var(--text-secondary);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color var(--transition-fast), color var(--transition-fast), background var(--transition-fast);
+}
+
+.evidence-ref:hover,
+.source-chip:hover,
+.source-chip.active {
+  border-color: var(--border-bright);
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.evidence-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.source-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+}
+
+.chip-id {
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+.chip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.evidence-card {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.evidence-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.evidence-kind,
+.evidence-time {
+  opacity: 0.8;
+}
+
+.evidence-label {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.evidence-snippet {
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+}
+
+.sources {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 :deep(.code-block) {
@@ -367,13 +654,13 @@ function handleMarkdownClick(e: MouseEvent) {
   line-height: 1.6;
 }
 
-/* "正在思考"三点跳动 */
 .placeholder {
   display: inline-flex;
   gap: 4px;
   align-items: center;
   height: 18px;
 }
+
 .placeholder .dot {
   width: 6px;
   height: 6px;
@@ -382,12 +669,15 @@ function handleMarkdownClick(e: MouseEvent) {
   opacity: 0.4;
   animation: blink 1.2s infinite;
 }
+
 .placeholder .dot:nth-child(2) {
   animation-delay: 0.2s;
 }
+
 .placeholder .dot:nth-child(3) {
   animation-delay: 0.4s;
 }
+
 @keyframes blink {
   0%,
   80%,
@@ -401,7 +691,6 @@ function handleMarkdownClick(e: MouseEvent) {
   }
 }
 
-/* 流式光标：在 markdown 内容末尾绘制一个闪烁竖线 */
 .markdown-body.streaming::after {
   content: '';
   display: inline-block;
@@ -414,13 +703,13 @@ function handleMarkdownClick(e: MouseEvent) {
   animation: caret 1s steps(2, start) infinite;
   opacity: 0.8;
 }
+
 @keyframes caret {
   to {
     visibility: hidden;
   }
 }
 
-/* 复制按钮 */
 .copy-btn {
   position: absolute;
   top: 6px;
@@ -439,14 +728,17 @@ function handleMarkdownClick(e: MouseEvent) {
   transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
   font-size: 14px;
 }
+
 .bubble:hover .copy-btn {
   opacity: 1;
 }
+
 .copy-btn:hover {
   color: var(--text-primary);
   background: var(--bg-surface);
   border-color: var(--border);
 }
+
 .copy-btn.ok {
   opacity: 1;
   color: var(--status-ok);
@@ -465,59 +757,6 @@ function handleMarkdownClick(e: MouseEvent) {
 
 .bubble.user .msg-time {
   text-align: left;
-}
-
-/* 答案出处 [v6.4] */
-.sources {
-  margin-top: 10px;
-  padding-top: 8px;
-  border-top: 1px dashed var(--border);
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.source-group {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-.group-title {
-  font-size: 11px;
-  color: var(--text-muted);
-  letter-spacing: 0.3px;
-}
-.group-overflow {
-  opacity: 0.7;
-}
-.source-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-}
-.source-chip {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 2px;
-  max-width: 220px;
-  padding: 2px 8px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border);
-  background: var(--bg-sunken);
-  font-size: 11px;
-  color: var(--text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: default;
-}
-.source-chip.memory {
-  border-style: dashed;
-  opacity: 0.7;
-}
-.chip-time {
-  color: var(--text-muted);
-  font-size: 10px;
-  flex-shrink: 0;
 }
 
 .collapse-enter-active,

@@ -4,6 +4,7 @@ import com.alibaba.cloud.ai.graph.NodeOutput;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yuyu.fishagent.agent.ChatAgent;
 import com.yuyu.fishagent.agent.config.AgentProperties;
+import com.yuyu.fishagent.chat.answer.EvidenceAssembler;
 import com.yuyu.fishagent.chat.router.QueryRouter;
 import com.yuyu.fishagent.chat.router.RouteDecision;
 import com.yuyu.fishagent.chat.history.ChatMemoryStore;
@@ -87,7 +88,8 @@ class ChatServiceObservabilityTest {
                 activeChatModelContext,
                 new com.yuyu.fishagent.common.trace.TraceCollector(new com.yuyu.fishagent.common.trace.TraceProperties()),
                 mock(com.yuyu.fishagent.common.trace.TraceFileWriter.class),
-                mock(com.yuyu.fishagent.agent.tool.result.ToolResultGovernor.class));
+                mock(com.yuyu.fishagent.agent.tool.result.ToolResultGovernor.class),
+                mock(EvidenceAssembler.class));
 
         SseEmitter emitter = mock(SseEmitter.class);
         doAnswer(invocation -> {

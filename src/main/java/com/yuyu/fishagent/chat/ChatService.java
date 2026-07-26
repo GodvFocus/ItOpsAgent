@@ -10,7 +10,9 @@ import com.yuyu.fishagent.chat.budget.BudgetPlan;
 import com.yuyu.fishagent.chat.budget.BudgetRequest;
 import com.yuyu.fishagent.chat.budget.ContextBudgetAllocator;
 import com.yuyu.fishagent.chat.budget.ContextWindowTrimmer;
+import com.yuyu.fishagent.chat.answer.EvidenceAssembler;
 import com.yuyu.fishagent.chat.dto.SourceRef;
+import com.yuyu.fishagent.chat.dto.StructuredAnswer;
 import com.yuyu.fishagent.chat.router.QueryRouter;
 import com.yuyu.fishagent.chat.router.QueryRoute;
 import com.yuyu.fishagent.chat.router.RouteDecision;
@@ -138,6 +140,7 @@ public class ChatService {
     private final TraceFileWriter traceFileWriter;
     /** 工具大结果 scratch 清理入口。 */
     private final ToolResultGovernor toolResultGovernor;
+    private final EvidenceAssembler evidenceAssembler;
 
     public ChatService(ChatAgent chatAgent,
                        @Qualifier("memoryChatModel") ChatModel fastRagChatModel,
@@ -159,7 +162,8 @@ public class ChatService {
                        ActiveChatModelContext activeChatModelContext,
                        TraceCollector traceCollector,
                        TraceFileWriter traceFileWriter,
-                       ToolResultGovernor toolResultGovernor) {
+                       ToolResultGovernor toolResultGovernor,
+                       EvidenceAssembler evidenceAssembler) {
         this.chatAgent = chatAgent;
         this.fastRagChatModel = fastRagChatModel;
         this.queryRouter = queryRouter;
@@ -181,6 +185,7 @@ public class ChatService {
         this.traceCollector = traceCollector;
         this.traceFileWriter = traceFileWriter;
         this.toolResultGovernor = toolResultGovernor;
+        this.evidenceAssembler = evidenceAssembler;
     }
 
     private String augmentRouteInstruction(String systemText, RouteDecision routeDecision) {
@@ -390,40 +395,9 @@ public class ChatService {
                     safeError(emitter, err);
                     turnLifecycle.error(err);
                 },
-                () -> {
-                    String full = assistantBuf.full.toString().trim();
-                    if (streamUserSnapshot != null) {
-                        UserContextHolder.set(streamUserSnapshot);
-                    }
-                    // Reactor 回调线程无 MDC，从入口快照恢复，使 persist / safeSend 日志携带 traceId。
-                    if (streamMdcSnapshot != null) MDC.setContextMap(streamMdcSnapshot);
-                    try {
-                        ChatMessageDTO userMsg = ChatMessageDTO.of("user", userInput);
-                        ChatMessageDTO assistantMsg = full.isBlank() ? null : ChatMessageDTO.of("assistant", full);
-                        try {
-                            persist(sid, userInput, full);
-                            shortTermMemoryService.appendTurnToL1(sid, userMsg, assistantMsg);
-                            updateAgentStateByRules(streamUserId, sid, assistantBuf.nodes);
-                        } catch (Exception e) {
-                            log.error("[ChatService] 持久化失败 sid={}: {}", sid, e.getMessage(), e);
-                            // persist 失败不阻塞 emitter 关闭
-                        }
-                        // [v6.4 Top1] 答案出处下发：done 前发 sources 事件（RecallHit→SourceRef），非空才发
-                        List<SourceRef> sources = SourceRef.from(buildResult.sources());
-                        if (!sources.isEmpty()) {
-                            safeSend(emitter, "sources", sources);
-                        }
-                        safeSend(emitter, "done", full);
-                        turnLifecycle.success();
-                        emitter.complete();
-                        triggerLongTermMemoryIngestion(streamUserId, sid, userInput, streamMdcSnapshot);
-                        triggerShortTermMaintenance(streamUserSnapshot, streamUserId, sid,
-                                buildResult.skipMaintenanceCompression(), streamMdcSnapshot);
-                    } finally {
-                        UserContextHolder.clear();
-                        MDC.clear();
-                    }
-                }
+                () -> handleStreamCompletion(
+                        sid, userInput, emitter, assistantBuf, buildResult,
+                        streamUserSnapshot, streamUserId, streamMdcSnapshot, turnLifecycle, true)
             );
         } finally {
             TraceContext.clear();
@@ -1151,6 +1125,8 @@ public class ChatService {
                                         ChatTurnLifecycle turnLifecycle,
                                         boolean updateAgentState) {
         String full = assistantBuf.full.toString().trim();
+        StructuredAnswer structuredAnswer = evidenceAssembler.assemble(userInput, full, buildResult.sources());
+        String finalAnswer = structuredAnswer == null ? full : structuredAnswer.renderedMarkdown();
         if (streamUserSnapshot != null) {
             UserContextHolder.set(streamUserSnapshot);
         }
@@ -1159,9 +1135,13 @@ public class ChatService {
         }
         try {
             ChatMessageDTO userMsg = ChatMessageDTO.of("user", userInput);
-            ChatMessageDTO assistantMsg = full.isBlank() ? null : ChatMessageDTO.of("assistant", full);
+            ChatMessageDTO assistantMsg = finalAnswer.isBlank()
+                    ? null
+                    : (structuredAnswer == null
+                    ? ChatMessageDTO.of("assistant", finalAnswer)
+                    : ChatMessageDTO.assistant(finalAnswer, structuredAnswer));
             try {
-                persist(sid, userInput, full);
+                persist(sid, userInput, finalAnswer, structuredAnswer);
                 shortTermMemoryService.appendTurnToL1(sid, userMsg, assistantMsg);
                 if (updateAgentState) {
                     updateAgentStateByRules(streamUserId, sid, assistantBuf.nodes);
@@ -1169,11 +1149,16 @@ public class ChatService {
             } catch (Exception e) {
                 log.error("[ChatService] 持久化失败 sid={}: {}", sid, e.getMessage(), e);
             }
-            List<SourceRef> sources = SourceRef.from(buildResult.sources());
+            List<SourceRef> sources = structuredAnswer == null
+                    ? SourceRef.from(buildResult.sources())
+                    : structuredAnswer.evidences();
             if (!sources.isEmpty()) {
                 safeSend(emitter, "sources", sources);
             }
-            safeSend(emitter, "done", full);
+            if (structuredAnswer != null) {
+                safeSend(emitter, "answer", structuredAnswer);
+            }
+            safeSend(emitter, "done", finalAnswer);
             turnLifecycle.success();
             emitter.complete();
             triggerLongTermMemoryIngestion(streamUserId, sid, userInput, streamMdcSnapshot);
@@ -1238,11 +1223,13 @@ public class ChatService {
      * @param userInput 用户输入
      * @param assistant 助手完整回复（可能为空字符串，例如工具调用后无文本输出）
      */
-    private void persist(String sid, String userInput, String assistant) {
+    private void persist(String sid, String userInput, String assistant, StructuredAnswer structuredAnswer) {
         List<ChatMessageDTO> toAppend = new ArrayList<>(2);
         toAppend.add(ChatMessageDTO.of("user", userInput));
         if (assistant != null && !assistant.isBlank()) {
-            toAppend.add(ChatMessageDTO.of("assistant", assistant));
+            toAppend.add(structuredAnswer == null
+                    ? ChatMessageDTO.of("assistant", assistant)
+                    : ChatMessageDTO.assistant(assistant, structuredAnswer));
         }
         memoryStore.appendAll(sid, toAppend);
     }
