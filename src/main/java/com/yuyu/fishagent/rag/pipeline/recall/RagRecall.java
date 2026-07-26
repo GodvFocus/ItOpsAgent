@@ -294,7 +294,8 @@ public final class RagRecall {
             String hyp = hydeService.generate(textForExpandAndVector);
             final String vectorText = (hyp != null && !hyp.isBlank()) ? hyp : textForExpandAndVector;
 
-            // 虚拟线程执行召回时不会继承 Servlet ThreadLocal；私有索引依赖 UserContextHolder.userId，必须在异步任务内回放快照。
+            // 虚拟线程执行召回时不会继承 Servlet ThreadLocal；私有/公共知识检索都依赖 UserContextHolder 中的用户或 workspace 信息，
+            // 必须在异步任务内回放请求线程快照。
             final UserContext ragUserSnapshot = UserContextHolder.get();
 
             long recallStart = System.currentTimeMillis();
@@ -315,7 +316,8 @@ public final class RagRecall {
                                 () -> safeTextSearch(userKnowledgeCardSearcher, sessionId, sq, perK)),
                         recallExecutor));
                 textFutures.add(MdcAsync.mdcSupplyAsync(
-                        () -> safeTextSearch(publicKnowledgeSearcher, sessionId, sq, perK),
+                        () -> runWithRagUserContext(ragUserSnapshot,
+                                () -> safeTextSearch(publicKnowledgeSearcher, sessionId, sq, perK)),
                         recallExecutor));
             }
 
@@ -332,7 +334,8 @@ public final class RagRecall {
                             () -> safeVectorSearch(userKnowledgeCardSearcher, sessionId, vectorText, perK)),
                     recallExecutor);
             CompletableFuture<List<RecallHit>> publicVecFuture = MdcAsync.mdcSupplyAsync(
-                    () -> safeVectorSearch(publicKnowledgeSearcher, sessionId, vectorText, perK),
+                    () -> runWithRagUserContext(ragUserSnapshot,
+                            () -> safeVectorSearch(publicKnowledgeSearcher, sessionId, vectorText, perK)),
                     recallExecutor);
 
             CompletableFuture.allOf(
