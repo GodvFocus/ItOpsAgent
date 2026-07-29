@@ -1,11 +1,14 @@
 package com.yuyu.fishagent.memory.longterm;
 
 import com.yuyu.fishagent.memory.config.MemoryProperties;
+import com.yuyu.fishagent.rag.config.MilvusProperties;
+import com.yuyu.fishagent.rag.pipeline.recall.MilvusNativeBm25Support;
 import io.milvus.client.MilvusServiceClient;
 import io.milvus.param.dml.DeleteParam;
 import io.milvus.param.dml.InsertParam;
 import io.milvus.param.dml.SearchParam;
 import io.milvus.response.SearchResultsWrapper;
+import io.milvus.v2.client.MilvusClientV2;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.embedding.EmbeddingModel;
@@ -28,8 +31,10 @@ import java.util.UUID;
 public class MilvusLongTermMemoryStore implements LongTermMemoryStore {
 
     private final MilvusServiceClient milvusClient;
+    private final MilvusClientV2 milvusClientV2;
     private final ObjectProvider<EmbeddingModel> embeddingModelProvider;
     private final MemoryProperties properties;
+    private final MilvusProperties milvusProperties;
     private final MemoryConflictJudge conflictJudge;
 
     @Override
@@ -53,7 +58,7 @@ public class MilvusLongTermMemoryStore implements LongTermMemoryStore {
             return;
         }
 
-        String collection = properties.getLongTermIndexName();
+        String collection = memoryCollection();
         long now = System.currentTimeMillis();
 
         for (String fact : facts) {
@@ -224,6 +229,13 @@ public class MilvusLongTermMemoryStore implements LongTermMemoryStore {
             values.add(v);
         }
         return values;
+    }
+
+    private String memoryCollection() {
+        return milvusProperties.getBm25().isEnabled()
+                && MilvusNativeBm25Support.serverSupportsBm25(milvusClientV2.getServerVersion())
+                ? milvusProperties.getBm25().getUserMemoryCollection()
+                : properties.getLongTermIndexName();
     }
 
     /**

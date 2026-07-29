@@ -116,11 +116,16 @@ class IngestProcessor:
             # ---- 步骤 6: 写入 Milvus ----
             # visibility=PRIVATE → itops_user_knowledge；WORKSPACE → itops_public_knowledge。
             scope_private = task.visibility.upper() == "PRIVATE"
-            collection_name = (
+            legacy_collection_name = (
                 self._settings.milvus_user_knowledge_collection
                 if scope_private
                 else self._settings.milvus_public_knowledge_collection
             )
+            collection_name = (
+                self._settings.milvus_bm25_user_knowledge_collection
+                if scope_private
+                else self._settings.milvus_bm25_public_knowledge_collection
+            ) if getattr(self._settings, "milvus_bm25_enabled", False) else legacy_collection_name
             file_type = self._file_type(task.file_name, content_type)
 
             # 文档真实创建时间（写入 Milvus doc_created_at 供 recency 使用）；取不到则回退入库时间

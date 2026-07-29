@@ -2,12 +2,12 @@ package com.yuyu.fishagent.rag.pipeline.recall;
 
 import com.yuyu.fishagent.auth.context.UserContextHolder;
 import com.yuyu.fishagent.memory.config.MemoryProperties;
+import com.yuyu.fishagent.rag.config.MilvusProperties;
 import com.yuyu.fishagent.rag.config.RagProperties;
 import io.milvus.client.MilvusServiceClient;
-import io.milvus.param.dml.QueryParam;
 import io.milvus.param.dml.SearchParam;
-import io.milvus.response.QueryResultsWrapper;
 import io.milvus.response.SearchResultsWrapper;
+import io.milvus.v2.client.MilvusClientV2;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.embedding.EmbeddingModel;
@@ -27,8 +27,10 @@ import java.util.List;
 public class UserMemoryMilvusSearcher implements RagRecall.DocumentSearcher {
 
     private final MilvusServiceClient milvusClient;
+    private final MilvusClientV2 milvusClientV2;
     private final ObjectProvider<EmbeddingModel> embeddingModelProvider;
     private final MemoryProperties memoryProperties;
+    private final MilvusProperties milvusProperties;
     private final RagProperties ragProperties;
 
     @Override
@@ -41,20 +43,35 @@ public class UserMemoryMilvusSearcher implements RagRecall.DocumentSearcher {
             return List.of();
         }
 
-        String collection = memoryProperties.getLongTermIndexName();
+        String collection = memoryCollection();
         // 按用户 + 来源类型 + 未失效过滤
         String expr = String.format(
                 "user_id == \"%s\" and source_type == \"chat\" and superseded == false", uid);
 
         try {
-            QueryParam query = QueryParam.newBuilder()
-                    .withCollectionName(collection)
-                    .withExpr(expr)
-                    .withLimit((long) Math.max(1, size))
-                    .withOutFields(List.of("id", "content", "created_at"))
-                    .build();
-            QueryResultsWrapper results = new QueryResultsWrapper(milvusClient.query(query).getData());
-            return mapMemoryHits(results.getRowRecords(), RagRecall.RecallSource.TEXT);
+            if (milvusProperties.getBm25().isEnabled()
+                    && MilvusNativeBm25Support.serverSupportsBm25(milvusClientV2.getServerVersion())) {
+                try {
+                    List<MilvusNativeBm25Support.NativeHit> hits = MilvusNativeBm25Support.search(
+                            milvusClientV2,
+                            milvusProperties.getBm25().getUserMemoryCollection(),
+                            milvusProperties.getBm25().getSparseField(),
+                            subQueryText,
+                            expr,
+                            Math.max(1, size),
+                            List.of("id", "content", "created_at"));
+                    return hits.stream().map(hit -> mapNativeRow(hit, RagRecall.RecallSource.TEXT)).toList();
+                } catch (Exception nativeError) {
+                    log.warn("[UserMemoryMilvus] 原生 BM25 查询失败，回退到兼容路径: {}", nativeError.getMessage());
+                }
+            }
+            List<io.milvus.response.QueryResultsWrapper.RowRecord> rows = MilvusLexicalSearchSupport.scan(
+                    milvusClient, collection, expr, List.of("id", "content", "created_at"),
+                    ragProperties.getRecall().getLexicalMaxScanRows(),
+                    ragProperties.getRecall().getLexicalBatchSize());
+            return MilvusLexicalSearchSupport.rank(rows, subQueryText, Math.max(1, size),
+                    row -> mapMemoryRow(row, RagRecall.RecallSource.TEXT),
+                    row -> String.valueOf(row.get("content")));
         } catch (Exception e) {
             log.warn("[UserMemoryMilvus] 文本检索失败: {}", e.getMessage());
             return List.of();
@@ -84,7 +101,7 @@ public class UserMemoryMilvusSearcher implements RagRecall.DocumentSearcher {
             return List.of();
         }
 
-        String collection = memoryProperties.getLongTermIndexName();
+        String collection = memoryCollection();
         String expr = String.format(
                 "user_id == \"%s\" and source_type == \"chat\" and superseded == false", uid);
 
@@ -112,13 +129,23 @@ public class UserMemoryMilvusSearcher implements RagRecall.DocumentSearcher {
      * 将 Milvus query（标量查询）结果映射为 RecallHit。
      * <p>记忆文档无 doc_id / chunk_index / authority 等知识库字段，使用固定标签"记忆"。</p>
      */
-    private static List<RagRecall.RecallHit> mapMemoryHits(List<QueryResultsWrapper.RowRecord> records,
+    private static RagRecall.RecallHit mapMemoryRow(io.milvus.response.QueryResultsWrapper.RowRecord row,
+                                                     RagRecall.RecallSource source) {
+        String id = String.valueOf(row.get("id"));
+        String content = String.valueOf(row.get("content"));
+        Long createdAt = row.get("created_at") instanceof Number
+                ? ((Number) row.get("created_at")).longValue() : null;
+        return new RagRecall.RecallHit(id, content.trim(), 0.0, source,
+                "记忆", 0.8, createdAt, null, null);
+    }
+
+    private static List<RagRecall.RecallHit> mapMemoryHits(List<io.milvus.response.QueryResultsWrapper.RowRecord> records,
                                                             RagRecall.RecallSource source) {
         List<RagRecall.RecallHit> out = new ArrayList<>();
         if (records == null) {
             return out;
         }
-        for (QueryResultsWrapper.RowRecord row : records) {
+        for (io.milvus.response.QueryResultsWrapper.RowRecord row : records) {
             try {
                 String id = String.valueOf(row.get("id"));
                 String content = String.valueOf(row.get("content"));
@@ -175,6 +202,20 @@ public class UserMemoryMilvusSearcher implements RagRecall.DocumentSearcher {
     private static String currentUserIdString() {
         Long id = UserContextHolder.currentUserIdOrNull();
         return id == null ? null : String.valueOf(id);
+    }
+
+    private String memoryCollection() {
+        return milvusProperties.getBm25().isEnabled()
+                && MilvusNativeBm25Support.serverSupportsBm25(milvusClientV2.getServerVersion())
+                ? milvusProperties.getBm25().getUserMemoryCollection()
+                : memoryProperties.getLongTermIndexName();
+    }
+
+    private static RagRecall.RecallHit mapNativeRow(MilvusNativeBm25Support.NativeHit hit,
+                                                     RagRecall.RecallSource source) {
+        String content = hit.string("content");
+        return new RagRecall.RecallHit(hit.id(), content == null ? "" : content.trim(), hit.score(), source,
+                "记忆", 0.8, hit.longNumber("created_at"), null, null);
     }
 
     private static List<Float> toFloatList(float[] vector) {

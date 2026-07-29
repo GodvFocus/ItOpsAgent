@@ -1,7 +1,7 @@
 # ROADMAP
 
-1. 修复真实 Hybrid RAG，并建立端到端评测
-   lexical 查询必须真正使用用户 query；使用真实 Milvus/ES 召回结果计算 Recall@K、MRR、nDCG，而不是只对预置候选分数重排。增加 `dense-only / lexical-only / hybrid / hybrid+rerank` 消融实验，并记录延迟和成本。
+1. [已完成代码与评测链路] 修复真实 Hybrid RAG，并建立端到端评测
+   lexical 查询真正使用用户 query；使用真实 Milvus 召回结果计算 Recall@K、MRR、nDCG，并支持 `dense-only / lexical-only / hybrid / hybrid+rerank` 消融实验和延迟、成本记录。原生 BM25 已接入，Docker Milvus 已升级到 v2.6.20 并完成 `_bm25` collection 迁移。
 2. 实现路由级工具权限与统一 Evidence Registry
    让每次 RAG 命中、日志命中、状态快照、工单记录都先注册为不可变 Evidence，再让结构化结论引用这些 ID。评测 citation precision、citation coverage 和 unsupported claim rate。
 3. 完成可靠事件投递

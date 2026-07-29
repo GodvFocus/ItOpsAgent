@@ -88,6 +88,12 @@ public class RagProperties {
 
         /** kNN 的 num_candidates，建议 ≥ perSubquerySize。v3.4 扩大候选池：80 → 120。 */
         private int knnNumCandidates = 120;
+
+        /** Milvus 2.4 lexical 兼容层最多扫描的权限过滤行数，防止 lexical 回退拖垮服务。 */
+        private int lexicalMaxScanRows = 10_000;
+
+        /** lexical 兼容层每次从 Milvus iterator 拉取的批大小。 */
+        private int lexicalBatchSize = 256;
     }
 
     @Data

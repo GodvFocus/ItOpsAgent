@@ -67,6 +67,21 @@ class Settings(BaseSettings):
     milvus_user_memory_collection: str = Field(
         default="itops_user_memory", validation_alias="MILVUS_USER_MEMORY_COLLECTION"
     )
+    milvus_bm25_enabled: bool = Field(
+        default=True, validation_alias="FISH_MILVUS_BM25_ENABLED"
+    )
+    milvus_bm25_user_knowledge_collection: str = Field(
+        default="itops_user_knowledge_bm25", validation_alias="MILVUS_BM25_USER_KNOWLEDGE_COLLECTION"
+    )
+    milvus_bm25_public_knowledge_collection: str = Field(
+        default="itops_public_knowledge_bm25", validation_alias="MILVUS_BM25_PUBLIC_KNOWLEDGE_COLLECTION"
+    )
+    milvus_bm25_user_memory_collection: str = Field(
+        default="itops_user_memory_bm25", validation_alias="MILVUS_BM25_USER_MEMORY_COLLECTION"
+    )
+    milvus_bm25_sparse_field: str = Field(
+        default="sparse_embedding", validation_alias="MILVUS_BM25_SPARSE_FIELD"
+    )
     milvus_batch_size: int = Field(default=100, validation_alias="MILVUS_BATCH_SIZE")
     milvus_mark_ready_max_attempts: int = Field(default=3, validation_alias="FISH_WORKER_MARK_READY_MAX_ATTEMPTS")
     milvus_mark_ready_backoff_base: float = Field(default=0.5, validation_alias="FISH_WORKER_MARK_READY_BACKOFF_BASE")

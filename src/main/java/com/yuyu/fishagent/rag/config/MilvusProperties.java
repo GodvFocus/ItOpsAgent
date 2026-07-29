@@ -32,4 +32,35 @@ public class MilvusProperties {
 
     /** 向量维度（BGE-M3 = 1024）。 */
     private int embeddingDimension = 1024;
+
+    /** 原生 BM25 Function 配置；关闭时继续使用 Milvus 2.4 兼容回退路径。 */
+    private Bm25 bm25 = new Bm25();
+
+    @Data
+    public static class Bm25 {
+
+        /** 是否切换到 Milvus 原生 BM25；需要 Milvus Server 2.5+。 */
+        private boolean enabled = true;
+
+        /** BM25 用户知识目标 collection，不覆盖旧 collection。 */
+        private String userKnowledgeCollection = "itops_user_knowledge_bm25";
+
+        /** BM25 公共知识目标 collection，不覆盖旧 collection。 */
+        private String publicKnowledgeCollection = "itops_public_knowledge_bm25";
+
+        /** BM25 长期记忆目标 collection，不覆盖旧 collection。 */
+        private String userMemoryCollection = "itops_user_memory_bm25";
+
+        /** BM25 Function 生成的稀疏向量字段名。 */
+        private String sparseField = "sparse_embedding";
+
+        /** BM25 Function 名称。 */
+        private String functionName = "text_bm25";
+
+        /** BM25 的 k1 参数。 */
+        private double k1 = 1.2;
+
+        /** BM25 的 b 参数。 */
+        private double b = 0.75;
+    }
 }

@@ -33,6 +33,8 @@ cd python && pip install -e . && python -m fish_worker
 - **前端**：Vue 3 + TypeScript + Vite + Element Plus + Pinia
 - **Python Worker**：独立进程，Redis Stream 消费文档入库任务
 
+> python使用conda虚拟环境：lc
+
 ## 架构概述
 
 项目是通用型 AI Agent 应用（正收敛为研发/SRE 排障辅助 Agent），单 Maven 模块，包结构 `com.yuyu.fishagent`：

@@ -18,10 +18,13 @@ public final class RetrievalMetrics {
     public static Result evaluate(List<String> rankedIds, Map<String, Integer> relevanceById, int k) {
         int limit = Math.max(1, k);
         if (rankedIds == null || rankedIds.isEmpty() || relevanceById == null || relevanceById.isEmpty()) {
-            return new Result(0.0, 0.0, 0.0);
+            return new Result(0.0, 0.0, 0.0, 0.0);
         }
         int considered = Math.min(limit, rankedIds.size());
         int relevantCount = 0;
+        int totalRelevant = (int) relevanceById.values().stream()
+                .filter(value -> value != null && value > 0)
+                .count();
         double reciprocalRank = 0.0;
         double dcg = 0.0;
         for (int i = 0; i < considered; i++) {
@@ -44,7 +47,8 @@ public final class RetrievalMetrics {
             idealDcg += gain(idealRelevance.get(i), i);
         }
         double ndcg = idealDcg == 0.0 ? 0.0 : dcg / idealDcg;
-        return new Result(relevantCount / (double) limit, reciprocalRank, ndcg);
+        double recall = totalRelevant == 0 ? 1.0 : relevantCount / (double) totalRelevant;
+        return new Result(relevantCount / (double) limit, recall, reciprocalRank, ndcg);
     }
 
     private static double gain(int relevance, int zeroBasedRank) {
@@ -58,6 +62,11 @@ public final class RetrievalMetrics {
         return Math.log(value) / Math.log(2.0);
     }
 
-    public record Result(double precisionAtK, double mrr, double ndcgAtK) {
+    public record Result(double precisionAtK, double recallAtK, double mrr, double ndcgAtK) {
+
+        /** 兼容旧调用方的三参数构造。 */
+        public Result(double precisionAtK, double mrr, double ndcgAtK) {
+            this(precisionAtK, 0.0, mrr, ndcgAtK);
+        }
     }
 }

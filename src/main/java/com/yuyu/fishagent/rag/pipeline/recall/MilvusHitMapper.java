@@ -80,17 +80,30 @@ public final class MilvusHitMapper {
                 Integer chunkIndex = chunkIdxObj instanceof Number
                         ? ((Number) chunkIdxObj).intValue() : null;
 
-                out.add(new RagRecall.RecallHit(
-                        id, content.trim(), 0.0, source,
-                        SourceAuthority.labelForKnowledge(authority, false),
-                        authority, null,
-                        row.get("doc_id") != null ? String.valueOf(row.get("doc_id")) : null,
-                        chunkIndex,
-                        row.get("doc_name") != null ? String.valueOf(row.get("doc_name")) : null));
+                out.add(fromQueryRow(row, source));
             } catch (Exception e) {
                 log.debug("Milvus query 结果映射跳过: {}", e.getMessage());
             }
         }
         return out;
+    }
+
+    /** 将单条 Milvus query 行映射为命中，供 lexical 排序复用。 */
+    public static RagRecall.RecallHit fromQueryRow(QueryResultsWrapper.RowRecord row,
+                                                    RagRecall.RecallSource source) {
+        String id = String.valueOf(row.get("id"));
+        String content = String.valueOf(row.get("content"));
+        Double authority = row.get("authority") instanceof Number
+                ? ((Number) row.get("authority")).doubleValue() : null;
+        Object chunkIdxObj = row.get("chunk_index");
+        Integer chunkIndex = chunkIdxObj instanceof Number
+                ? ((Number) chunkIdxObj).intValue() : null;
+        return new RagRecall.RecallHit(
+                id, content.trim(), 0.0, source,
+                SourceAuthority.labelForKnowledge(authority, false),
+                authority, null,
+                row.get("doc_id") != null ? String.valueOf(row.get("doc_id")) : null,
+                chunkIndex,
+                row.get("doc_name") != null ? String.valueOf(row.get("doc_name")) : null);
     }
 }

@@ -209,6 +209,25 @@ fish:
       网络搜索返回的日期多为新闻发稿/事件发生时间或站点元数据，不等于「此刻」；不同搜索源索引新旧可能不一致，不要仅因某条摘要年份与直觉不符就断言真实日期。需要与用户时区对齐或二次确认时刻时，可调用工具 get_current_datetime（可传 IANA 时区）。
 
   # ── 记忆系统 ───────────────────────────────────────────────
+  milvus:
+    uri: ${MILVUS_URI:milvus-standalone:19530}
+    token: ${MILVUS_TOKEN:}
+    user-knowledge-collection: ${MILVUS_USER_KNOWLEDGE_COLLECTION:itops_user_knowledge}
+    public-knowledge-collection: ${MILVUS_PUBLIC_KNOWLEDGE_COLLECTION:itops_public_knowledge}
+    user-memory-collection: ${MILVUS_USER_MEMORY_COLLECTION:itops_user_memory}
+    nprobe: ${MILVUS_NPROBE:16}
+    embedding-dimension: ${MILVUS_EMBEDDING_DIMENSION:1024}
+    bm25:
+      # 当前 Docker Milvus 已升级到 2.6.20，默认启用原生 BM25。
+      enabled: ${FISH_MILVUS_BM25_ENABLED:true}
+      user-knowledge-collection: ${MILVUS_BM25_USER_KNOWLEDGE_COLLECTION:itops_user_knowledge_bm25}
+      public-knowledge-collection: ${MILVUS_BM25_PUBLIC_KNOWLEDGE_COLLECTION:itops_public_knowledge_bm25}
+      user-memory-collection: ${MILVUS_BM25_USER_MEMORY_COLLECTION:itops_user_memory_bm25}
+      sparse-field: ${MILVUS_BM25_SPARSE_FIELD:sparse_embedding}
+      function-name: ${MILVUS_BM25_FUNCTION_NAME:text_bm25}
+      k1: ${MILVUS_BM25_K1:1.2}
+      b: ${MILVUS_BM25_B:0.75}
+
   memory:
     short-term-window-size: 20
     summary-trigger-threshold: 30
@@ -245,6 +264,9 @@ fish:
     # 多查询召回（v3.4 扩大候选池）
     recall:
       max-sub-queries: 12
+      # Milvus 2.4 lexical 兼容层最多扫描的权限过滤行数
+      lexical-max-scan-rows: ${FISH_RAG_LEXICAL_MAX_SCAN_ROWS:10000}
+      lexical-batch-size: ${FISH_RAG_LEXICAL_BATCH_SIZE:256}
       min-token-chars: 1
       per-subquery-size: 10
       vector-leg-enabled: true

@@ -4,10 +4,9 @@ import com.yuyu.fishagent.auth.context.UserContextHolder;
 import com.yuyu.fishagent.rag.config.MilvusProperties;
 import com.yuyu.fishagent.rag.config.RagProperties;
 import io.milvus.client.MilvusServiceClient;
-import io.milvus.param.dml.QueryParam;
 import io.milvus.param.dml.SearchParam;
-import io.milvus.response.QueryResultsWrapper;
 import io.milvus.response.SearchResultsWrapper;
+import io.milvus.v2.client.MilvusClientV2;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.embedding.EmbeddingModel;
@@ -27,12 +26,13 @@ import java.util.List;
 public class PublicKnowledgeMilvusSearcher implements RagRecall.DocumentSearcher {
 
     private final MilvusServiceClient milvusClient;
+    private final MilvusClientV2 milvusClientV2;
     private final ObjectProvider<EmbeddingModel> embeddingModelProvider;
     private final MilvusProperties milvusProperties;
     private final RagProperties ragProperties;
 
     /**
-     * 公有知识库标量全文检索（Milvus query），仅过滤 ready == true。
+     * lexical 检索：先在 Milvus 按 workspace 过滤，再使用真实 query 对候选内容排序。
      */
     @Override
     public List<RagRecall.RecallHit> searchByText(String sessionId, String subQueryText, int size) {
@@ -47,14 +47,31 @@ public class PublicKnowledgeMilvusSearcher implements RagRecall.DocumentSearcher
         int limit = Math.max(1, size);
 
         try {
-            QueryParam query = QueryParam.newBuilder()
-                    .withCollectionName(collection)
-                    .withExpr(String.format("workspace_id == \"%s\" and ready == true", escape(workspaceId)))
-                    .withLimit((long) limit)
-                    .withOutFields(List.of("id", "content", "doc_id", "chunk_index", "doc_name", "authority"))
-                    .build();
-            QueryResultsWrapper results = new QueryResultsWrapper(milvusClient.query(query).getData());
-            return MilvusHitMapper.fromQuery(results.getRowRecords(), RagRecall.RecallSource.TEXT);
+            String expr = String.format("workspace_id == \"%s\" and ready == true", escape(workspaceId));
+            if (milvusProperties.getBm25().isEnabled()
+                    && MilvusNativeBm25Support.serverSupportsBm25(milvusClientV2.getServerVersion())) {
+                try {
+                    List<MilvusNativeBm25Support.NativeHit> hits = MilvusNativeBm25Support.search(
+                            milvusClientV2,
+                            milvusProperties.getBm25().getPublicKnowledgeCollection(),
+                            milvusProperties.getBm25().getSparseField(),
+                            subQueryText,
+                            expr,
+                            limit,
+                            List.of("id", "content", "doc_id", "chunk_index", "doc_name", "authority"));
+                    return hits.stream().map(hit -> mapNativeHit(hit, RagRecall.RecallSource.TEXT)).toList();
+                } catch (Exception nativeError) {
+                    log.warn("[PublicKnowledgeMilvus] 原生 BM25 查询失败，回退到兼容路径: {}", nativeError.getMessage());
+                }
+            }
+            List<String> fields = List.of("id", "content", "contextualized_content", "doc_id", "chunk_index", "doc_name", "authority");
+            List<io.milvus.response.QueryResultsWrapper.RowRecord> rows = MilvusLexicalSearchSupport.scan(
+                    milvusClient, collection, expr, fields,
+                    ragProperties.getRecall().getLexicalMaxScanRows(),
+                    ragProperties.getRecall().getLexicalBatchSize());
+            return MilvusLexicalSearchSupport.rank(rows, subQueryText, limit,
+                    row -> MilvusHitMapper.fromQueryRow(row, RagRecall.RecallSource.TEXT),
+                    PublicKnowledgeMilvusSearcher::searchableText);
         } catch (Exception e) {
             log.warn("[PublicKnowledgeMilvus] 文本检索失败: {}", e.getMessage());
             return List.of();
@@ -87,7 +104,9 @@ public class PublicKnowledgeMilvusSearcher implements RagRecall.DocumentSearcher
         }
 
         int k = Math.max(1, size);
-        String collection = milvusProperties.getPublicKnowledgeCollection();
+        String collection = useBm25Collection()
+                ? milvusProperties.getBm25().getPublicKnowledgeCollection()
+                : milvusProperties.getPublicKnowledgeCollection();
 
         try {
             List<List<Float>> queryVectors = List.of(queryVector);
@@ -127,5 +146,24 @@ public class PublicKnowledgeMilvusSearcher implements RagRecall.DocumentSearcher
 
     private static String escape(String value) {
         return value.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    private static String searchableText(io.milvus.response.QueryResultsWrapper.RowRecord row) {
+        return String.valueOf(row.get("content")) + " " + String.valueOf(row.get("contextualized_content"));
+    }
+
+    private static RagRecall.RecallHit mapNativeHit(MilvusNativeBm25Support.NativeHit hit,
+                                                      RagRecall.RecallSource source) {
+        Double authority = hit.number("authority");
+        Long chunk = hit.longNumber("chunk_index");
+        return new RagRecall.RecallHit(
+                hit.id(), hit.string("content"), hit.score(), source,
+                SourceAuthority.labelForKnowledge(authority, false), authority, null,
+                hit.string("doc_id"), chunk == null ? null : chunk.intValue(), hit.string("doc_name"));
+    }
+
+    private boolean useBm25Collection() {
+        return milvusProperties.getBm25().isEnabled()
+                && MilvusNativeBm25Support.serverSupportsBm25(milvusClientV2.getServerVersion());
     }
 }

@@ -10,7 +10,16 @@ import logging
 import time
 from typing import Any
 
-from pymilvus import Collection, connections, utility, DataType, FieldSchema, CollectionSchema
+from pymilvus import (
+    Collection,
+    CollectionSchema,
+    DataType,
+    FieldSchema,
+    Function,
+    FunctionType,
+    connections,
+    utility,
+)
 
 from fish_worker.chunker.text_chunker import TextChunk
 from fish_worker.config import Settings
@@ -41,6 +50,7 @@ _READY_UPSERT_FIELDS = [
     "source_type",
     "superseded",
 ]
+_BM25_SPARSE_FIELD = "sparse_embedding"
 
 
 def _escape_milvus_expr(val: str) -> str:
@@ -58,7 +68,7 @@ def _normalize_page_number(page: int | None) -> int:
     return 0 if page is None else int(page)
 
 
-def _ensure_collection(name: str) -> Collection:
+def _ensure_collection(name: str, bm25_enabled: bool = False) -> Collection:
     """确保 Collection 存在，不存在则创建（含 BM25 analyzer 的 content 字段 + dense vector 字段）。"""
     if utility.has_collection(name):
         return Collection(name)
@@ -85,7 +95,21 @@ def _ensure_collection(name: str) -> Collection:
         FieldSchema(name="source_type", dtype=DataType.VARCHAR, max_length=32),
         FieldSchema(name="superseded", dtype=DataType.BOOL),
     ]
-    schema = CollectionSchema(fields=fields, description=f"Fish-Agent knowledge: {name}")
+    functions = []
+    if bm25_enabled:
+        fields.insert(3, FieldSchema(name=_BM25_SPARSE_FIELD, dtype=DataType.SPARSE_FLOAT_VECTOR))
+        functions.append(Function(
+            name="text_bm25",
+            function_type=FunctionType.BM25,
+            input_field_names=["content"],
+            output_field_names=[_BM25_SPARSE_FIELD],
+            description="Fish-Agent 原生 BM25 Function",
+        ))
+    schema = CollectionSchema(
+        fields=fields,
+        functions=functions or None,
+        description=f"Fish-Agent knowledge: {name}",
+    )
     col = Collection(name=name, schema=schema)
 
     # 为 embedding 字段创建 IVF_FLAT 索引（适合中小规模）
@@ -95,6 +119,19 @@ def _ensure_collection(name: str) -> Collection:
         "params": {"nlist": 128},
     }
     col.create_index(field_name="embedding", index_params=index_params)
+    if bm25_enabled:
+        col.create_index(
+            field_name=_BM25_SPARSE_FIELD,
+            index_params={
+                "index_type": "SPARSE_INVERTED_INDEX",
+                "metric_type": "BM25",
+                "params": {
+                    "inverted_index_algo": "DAAT_MAXSCORE",
+                    "bm25_k1": 1.2,
+                    "bm25_b": 0.75,
+                },
+            },
+        )
 
     log.info("Created Milvus collection: %s", name)
     return col
@@ -113,7 +150,7 @@ class MilvusIndexer:
     def delete_by_doc_id(self, collection_name: str, doc_id: str) -> None:
         """写入前清理该 doc_id 下的旧切片，保证幂等重处理不产生残留。"""
         try:
-            col = _ensure_collection(collection_name)
+            col = _ensure_collection(collection_name, getattr(self._s, "milvus_bm25_enabled", False))
             col.load()
             col.delete(expr=f'doc_id == "{_escape_milvus_expr(doc_id)}"')
             log.debug("Milvus delete_by_doc_id doc_id=%s collection=%s", doc_id, collection_name)
@@ -142,7 +179,8 @@ class MilvusIndexer:
         if len(chunks) != len(vectors):
             raise ValueError("chunks and vectors length mismatch")
 
-        col = _ensure_collection(collection_name)
+        bm25_enabled = getattr(self._s, "milvus_bm25_enabled", False)
+        col = _ensure_collection(collection_name, bm25_enabled)
         now_ms = int(time.time() * 1000)
 
         rows: list[dict[str, Any]] = []
@@ -195,7 +233,8 @@ class MilvusIndexer:
         max_attempts = max(1, int(getattr(self._s, "milvus_mark_ready_max_attempts", 3)))
         backoff_base = float(getattr(self._s, "milvus_mark_ready_backoff_base", 0.5))
 
-        col = _ensure_collection(collection_name)
+        bm25_enabled = getattr(self._s, "milvus_bm25_enabled", False)
+        col = _ensure_collection(collection_name, bm25_enabled)
 
         escaped_doc_id = _escape_milvus_expr(doc_id)
         last_exc: Exception | None = None
@@ -203,9 +242,12 @@ class MilvusIndexer:
             try:
                 col.load()
                 # 每次重试都重新查询，确保拿到最新数据
+                output_fields = list(_READY_UPSERT_FIELDS)
+                if bm25_enabled:
+                    output_fields.append(_BM25_SPARSE_FIELD)
                 results = col.query(
                     expr=f'doc_id == "{escaped_doc_id}"',
-                    output_fields=_READY_UPSERT_FIELDS,
+                    output_fields=output_fields,
                 )
                 for r in results:
                     r["ready"] = True
