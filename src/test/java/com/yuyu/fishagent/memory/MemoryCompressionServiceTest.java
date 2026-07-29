@@ -1,6 +1,10 @@
 package com.yuyu.fishagent.memory;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yuyu.fishagent.common.resilience.CircuitBreakerHelper;
+import com.yuyu.fishagent.common.trace.PromptTraceSupport;
+import com.yuyu.fishagent.common.trace.TraceCollector;
+import com.yuyu.fishagent.common.trace.TraceProperties;
 import com.yuyu.fishagent.common.dto.ChatMessageDTO;
 import com.yuyu.fishagent.memory.compress.MemoryPromptBuilder;
 import com.yuyu.fishagent.memory.compress.MemoryResponseParser;
@@ -10,6 +14,7 @@ import com.yuyu.fishagent.memory.shortterm.ShortTermMemoryStore;
 import com.yuyu.fishagent.memory.shortterm.StructuredSummary;
 import com.yuyu.fishagent.memory.shortterm.TopicSegment;
 import com.yuyu.fishagent.memory.shortterm.UserSignals;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.model.ChatModel;
@@ -87,12 +92,15 @@ class MemoryCompressionServiceTest {
         InMemoryShortTermMemoryStore store = new InMemoryShortTermMemoryStore();
         MemoryProperties properties = new MemoryProperties();
         properties.setShortTermWindowSize(2);
+        TraceCollector traceCollector = new TraceCollector(new TraceProperties());
         MemoryCompressionService service = new MemoryCompressionService(
                 chatModel,
                 new MemoryPromptBuilder(new ObjectMapper()),
                 new MemoryResponseParser(new ObjectMapper()),
                 store,
-                properties
+                properties,
+                new PromptTraceSupport(traceCollector),
+                new CircuitBreakerHelper(CircuitBreakerRegistry.ofDefaults())
         );
         StructuredSummary currentSummary = new StructuredSummary(
                 List.of(new TopicSegment("报销", "ACTIVE", "等待财务回复")),

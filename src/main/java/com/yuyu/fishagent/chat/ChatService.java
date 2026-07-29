@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.alibaba.cloud.ai.graph.NodeOutput;
 import com.alibaba.cloud.ai.graph.streaming.StreamingOutput;
 import com.yuyu.fishagent.agent.ChatAgent;
+import com.yuyu.fishagent.common.resilience.ResilienceConstants;
 import com.yuyu.fishagent.auth.context.UserContext;
 import com.yuyu.fishagent.auth.context.UserContextHolder;
 import com.yuyu.fishagent.chat.budget.BudgetPlan;
@@ -22,6 +23,9 @@ import com.yuyu.fishagent.common.trace.TraceCollector;
 import com.yuyu.fishagent.common.trace.TraceConstants;
 import com.yuyu.fishagent.common.trace.TraceContext;
 import com.yuyu.fishagent.common.trace.TraceFileWriter;
+import com.yuyu.fishagent.common.trace.PromptTraceSupport;
+import com.yuyu.fishagent.common.trace.PromptTraceSupport.PromptTraceMetadata;
+import com.yuyu.fishagent.common.trace.TurnTrace;
 import com.yuyu.fishagent.common.metrics.ChatMetrics;
 import com.yuyu.fishagent.common.metrics.ChatTurnLifecycle;
 import com.yuyu.fishagent.chat.history.ChatMemoryStore;
@@ -49,6 +53,10 @@ import com.yuyu.fishagent.common.dto.ChatMessageDTO;
 import com.yuyu.fishagent.chat.dto.SessionInfo;
 import com.yuyu.fishagent.common.exception.SessionLockedException;
 import lombok.extern.slf4j.Slf4j;
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
+import io.github.resilience4j.reactor.circuitbreaker.operator.CircuitBreakerOperator;
 import org.slf4j.MDC;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
@@ -56,11 +64,13 @@ import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import reactor.core.Disposable;
+import reactor.core.publisher.Flux;
 
 import java.io.IOException;
 import java.time.LocalDateTime;
@@ -73,6 +83,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -141,6 +152,8 @@ public class ChatService {
     /** 工具大结果 scratch 清理入口。 */
     private final ToolResultGovernor toolResultGovernor;
     private final EvidenceAssembler evidenceAssembler;
+    private final CircuitBreaker llmCircuitBreaker;
+    private final PromptTraceSupport promptTraceSupport;
 
     public ChatService(ChatAgent chatAgent,
                        @Qualifier("memoryChatModel") ChatModel fastRagChatModel,
@@ -163,7 +176,9 @@ public class ChatService {
                        TraceCollector traceCollector,
                        TraceFileWriter traceFileWriter,
                        ToolResultGovernor toolResultGovernor,
-                       EvidenceAssembler evidenceAssembler) {
+                       EvidenceAssembler evidenceAssembler,
+                       CircuitBreakerRegistry circuitBreakerRegistry,
+                       PromptTraceSupport promptTraceSupport) {
         this.chatAgent = chatAgent;
         this.fastRagChatModel = fastRagChatModel;
         this.queryRouter = queryRouter;
@@ -186,6 +201,8 @@ public class ChatService {
         this.traceFileWriter = traceFileWriter;
         this.toolResultGovernor = toolResultGovernor;
         this.evidenceAssembler = evidenceAssembler;
+        this.llmCircuitBreaker = circuitBreakerRegistry.circuitBreaker(ResilienceConstants.CB_LLM);
+        this.promptTraceSupport = promptTraceSupport;
     }
 
     private String augmentRouteInstruction(String systemText, RouteDecision routeDecision) {
@@ -270,20 +287,27 @@ public class ChatService {
                 ? UUID.randomUUID().toString() : sessionId;
         final String turnId = UUID.randomUUID().toString();
         traceCollector.startTurn(turnId, sid, MDC.get(TraceConstants.TRACE_ID));
-        final ChatTurnLifecycle turnLifecycle = ChatTurnLifecycle.start(chatMetrics, outcome -> {
-            var completedTrace = traceCollector.finishTurn(turnId, outcome);
+        AtomicBoolean tracePersisted = new AtomicBoolean(false);
+        Runnable persistTraceOnce = () -> {
+            if (!tracePersisted.compareAndSet(false, true)) {
+                return;
+            }
+            TurnTrace completedTrace = traceCollector.current(turnId);
             if (completedTrace != null) {
                 traceFileWriter.persistAsync(completedTrace);
                 traceCollector.remove(turnId);
             }
             toolResultGovernor.clearScratch(turnId);
-        });
+        };
+        final ChatTurnLifecycle turnLifecycle = ChatTurnLifecycle.start(chatMetrics,
+                outcome -> traceCollector.finishTurn(turnId, outcome));
 
         // ReAct 完成回调可能在非 Servlet 线程执行，ThreadLocal 不会自动传递，此处快照用户上下文供 persist 使用。
         final UserContext streamUserSnapshot = UserContextHolder.get();
         final Long streamUserId = streamUserSnapshot == null ? null : streamUserSnapshot.userId();
         // SSE 返回后 Filter 会清理 Servlet 线程 MDC，流式完成回调需显式复用入口处的 MDC 快照。
         final Map<String, String> streamMdcSnapshot = MDC.getCopyOfContextMap();
+        AtomicBoolean normalCompletion = new AtomicBoolean(false);
 
         // 须先于会话锁检查创建：拦截器已对 SSE 并发 INCR，若抢锁失败须在此 Runnable 中 DECR，否则槽位泄漏。
         AtomicBoolean sseSlotReleased = new AtomicBoolean(false);
@@ -300,6 +324,7 @@ public class ChatService {
             releaseSseSlotOnce.run();
             SessionLockedException error = new SessionLockedException("此会话正在处理中，请等待回复完成后再发送");
             turnLifecycle.error(error);
+            persistTraceOnce.run();
             throw error;
         }
 
@@ -308,6 +333,7 @@ public class ChatService {
             safeError(emitter, error);
             releaseSseSlotOnce.run();
             turnLifecycle.error(error);
+            persistTraceOnce.run();
             return sid;
         }
 
@@ -317,24 +343,30 @@ public class ChatService {
             // ignore
         }
 
-        RouteDecision routeDecision = queryRouter.route(userInput);
-        traceCollector.recordRoute(turnId, routeDecision.route().name(), routeDecision.reason());
-
+        final RouteDecision routeDecision;
         final BuildMessagesResult buildResult;
+        TraceContext.setTurnId(turnId);
         try {
-            // 1. 组装上下文：热路径仅读 L1(Redis)；L1/L2 均未命中才由协调器回源 L3 全量历史。
-            buildResult = buildMessages(sid, streamUserId, userInput);
-            buildResult.messages().set(0, new SystemMessage(
-                    augmentRouteInstruction(((SystemMessage) buildResult.messages().get(0)).getText(), routeDecision)));
-            buildResult.messages().add(new UserMessage(userInput));
-            traceCollector.recordRagInjected(turnId, buildResult.ragInjected());
-            traceCollector.recordMemoryInjected(turnId, buildResult.memoryInjected());
-        } catch (Exception e) {
-            log.error("[ChatService] 组装上下文失败 sid={}", sid, e);
-            releaseSseSlotOnce.run();
-            safeError(emitter, e);
-            turnLifecycle.error(e);
-            return sid;
+            routeDecision = queryRouter.route(userInput);
+            traceCollector.recordRoute(turnId, routeDecision.route().name(), routeDecision.reason());
+            try {
+                // 1. 组装上下文：热路径仅读 L1(Redis)；L1/L2 均未命中才由协调器回源 L3 全量历史。
+                buildResult = buildMessages(sid, streamUserId, userInput);
+                buildResult.messages().set(0, new SystemMessage(
+                        augmentRouteInstruction(((SystemMessage) buildResult.messages().get(0)).getText(), routeDecision)));
+                buildResult.messages().add(new UserMessage(userInput));
+                traceCollector.recordRagInjected(turnId, buildResult.ragInjected());
+                traceCollector.recordMemoryInjected(turnId, buildResult.memoryInjected());
+            } catch (Exception e) {
+                log.error("[ChatService] 组装上下文失败 sid={}", sid, e);
+                releaseSseSlotOnce.run();
+                safeError(emitter, e);
+                turnLifecycle.error(e);
+                persistTraceOnce.run();
+                return sid;
+            }
+        } finally {
+            TraceContext.clear();
         }
 
         // 2. 注册 emitter 生命周期回调（必须在 subscribe 之前：若 onComplete 异步触发并调用
@@ -349,6 +381,7 @@ public class ChatService {
             releaseSseSlotOnce.run();
             if (disposableRef[0] != null) disposableRef[0].dispose();
             turnLifecycle.error(new IllegalStateException("SSE timeout"));
+            persistTraceOnce.run();
         });
         emitter.onCompletion(() -> {
             if (streamMdcSnapshot != null) MDC.setContextMap(streamMdcSnapshot);
@@ -357,7 +390,11 @@ public class ChatService {
             } finally { MDC.clear(); }
             releaseSseSlotOnce.run();
             if (disposableRef[0] != null) disposableRef[0].dispose();
+            if (normalCompletion.get()) {
+                return;
+            }
             turnLifecycle.error(new IllegalStateException("SSE completed before chat stream finished"));
+            persistTraceOnce.run();
         });
         emitter.onError(e -> {
             if (streamMdcSnapshot != null) MDC.setContextMap(streamMdcSnapshot);
@@ -367,22 +404,43 @@ public class ChatService {
             releaseSseSlotOnce.run();
             if (disposableRef[0] != null) disposableRef[0].dispose();
             turnLifecycle.error(e);
+            persistTraceOnce.run();
         });
 
         // 3. 订阅流式输出
         AssistantBuf assistantBuf = new AssistantBuf();
         if (routeDecision.route() == QueryRoute.FAST_RAG) {
             AtomicLong previousChunkAt = new AtomicLong(System.nanoTime());
-            disposableRef[0] = fastRagChatModel.stream(new Prompt(buildResult.messages())).subscribe(
+            Prompt fastRagPrompt = new Prompt(buildResult.messages());
+            promptTraceSupport.recordPrompt(turnId, "fast-rag-main", fastRagPrompt,
+                    new PromptTraceMetadata(
+                            buildResult.ragInjectionCount(),
+                            buildResult.memoryItemCount(),
+                            null,
+                            null));
+            disposableRef[0] = fastRagChatModel.stream(fastRagPrompt)
+                    .transformDeferred(CircuitBreakerOperator.of(llmCircuitBreaker))
+                    .onErrorResume(CallNotPermittedException.class, e -> {
+                        log.warn("[ChatService] FAST_RAG LLM 熔断器打开，返回降级提示 sid={}", sid);
+                        return Flux.just(llmFallbackResponse());
+                    })
+                    .subscribe(
                     response -> handleFastRagChunk(turnId, response, emitter, assistantBuf, previousChunkAt),
-                    err -> handleStreamError(sid, emitter, turnLifecycle, err, streamMdcSnapshot),
+                    err -> handleStreamError(sid, emitter, turnLifecycle, err, streamMdcSnapshot, persistTraceOnce),
                     () -> handleStreamCompletion(
-                            sid, userInput, emitter, assistantBuf, buildResult,
-                            streamUserSnapshot, streamUserId, streamMdcSnapshot, turnLifecycle, false)
+                            turnId, sid, userInput, emitter, assistantBuf, buildResult,
+                            streamUserSnapshot, streamUserId, streamMdcSnapshot,
+                            turnLifecycle, false, normalCompletion, persistTraceOnce)
             );
             return sid;
         }
         //调用大模型流式推理
+        promptTraceSupport.recordMessages(turnId, "agent-main", buildResult.messages(),
+                new PromptTraceMetadata(
+                        buildResult.ragInjectionCount(),
+                        buildResult.memoryItemCount(),
+                        null,
+                        null));
         TraceContext.setTurnId(turnId);
         try {
             disposableRef[0] = chatAgent.stream(buildResult.messages(), sid, turnId).subscribe(
@@ -395,10 +453,12 @@ public class ChatService {
                     } finally { MDC.clear(); }
                     safeError(emitter, err);
                     turnLifecycle.error(err);
+                    persistTraceOnce.run();
                 },
                 () -> handleStreamCompletion(
-                        sid, userInput, emitter, assistantBuf, buildResult,
-                        streamUserSnapshot, streamUserId, streamMdcSnapshot, turnLifecycle, true)
+                        turnId, sid, userInput, emitter, assistantBuf, buildResult,
+                        streamUserSnapshot, streamUserId, streamMdcSnapshot,
+                        turnLifecycle, true, normalCompletion, persistTraceOnce)
             );
         } finally {
             TraceContext.clear();
@@ -519,6 +579,10 @@ public class ChatService {
         log.info("[ChatService] Token 预算 sid={}, model={}, used={}/{}, trimmed={}",
                 sid, activeModelName == null ? "(unknown)" : activeModelName,
                 totalInputTokens, budgetPlan.inputBudget(), trimmed);
+        int memoryItemCount = trimmedContextMessages.size()
+                + (summaryBlock.isBlank() ? 0 : 1)
+                + excerptBlockLineCount(excerptBlock)
+                + (stateBlock.isBlank() ? 0 : 1);
         return new BuildMessagesResult(
                 messages,
                 memoryResult.compressedOnColdPath(),
@@ -527,7 +591,9 @@ public class ChatService {
                 trimmed,
                 ragBlock.isEmpty() ? null : ragBlock,
                 memoryTraceBlock.isEmpty() ? null : memoryTraceBlock.toString(),
-                ragSources
+                ragSources,
+                ragSources.size(),
+                memoryItemCount
         );
     }
 
@@ -542,7 +608,9 @@ public class ChatService {
             boolean trimmed,
             String ragInjected,
             String memoryInjected,
-            List<RagRecall.RecallHit> sources) {
+            List<RagRecall.RecallHit> sources,
+            int ragInjectionCount,
+            int memoryItemCount) {
     }
 
     /**
@@ -733,10 +801,14 @@ public class ChatService {
      * @param userId       当前用户 ID（供 L2 文件实现分区）
      * @param sid          会话 ID
      */
-    private void triggerShortTermMaintenance(UserContext userSnapshot, Long userId, String sid,
-                                             boolean skipCompressionThisTurn,
-                                             Map<String, String> mdcSnapshot) {
-        MdcAsync.mdcRunAsync(() -> {
+    private CompletableFuture<Void> triggerShortTermMaintenance(String turnId,
+                                                                UserContext userSnapshot,
+                                                                Long userId,
+                                                                String sid,
+                                                                boolean skipCompressionThisTurn,
+                                                                Map<String, String> mdcSnapshot) {
+        return MdcAsync.mdcRunAsync(() -> {
+            TraceContext.setTurnId(turnId);
             if (userSnapshot != null) {
                 UserContextHolder.set(userSnapshot);
             }
@@ -775,6 +847,7 @@ public class ChatService {
                 log.warn("[ChatService] 短期记忆维护失败 sid={}: {}", sid, e.getMessage());
             } finally {
                 UserContextHolder.clear();
+                TraceContext.clear();
             }
         }, mdcSnapshot);
     }
@@ -1012,12 +1085,22 @@ public class ChatService {
      * @param sid       会话 ID
      * @param userInput 用户当前输入
      */
-    private void triggerLongTermMemoryIngestion(Long userId, String sid, String userInput,
-                                                Map<String, String> mdcSnapshot) {
+    private CompletableFuture<Void> triggerLongTermMemoryIngestion(String turnId,
+                                                                   Long userId,
+                                                                   String sid,
+                                                                   String userInput,
+                                                                   Map<String, String> mdcSnapshot) {
         log.debug("[ChatService] 触发异步长期记忆主动录入 uid={}, sid={}, inputLen={}",
                 userId, sid, userInput == null ? 0 : userInput.length());
         // 捕获 userId：异步线程中 ThreadLocal 不可用
-        MdcAsync.mdcRunAsync(() -> longTermMemoryIngestionService.ingestFromUserInput(userId, sid, userInput), mdcSnapshot);
+        return MdcAsync.mdcRunAsync(() -> {
+            TraceContext.setTurnId(turnId);
+            try {
+                longTermMemoryIngestionService.ingestFromUserInput(userId, sid, userInput);
+            } finally {
+                TraceContext.clear();
+            }
+        }, mdcSnapshot);
     }
 
     /**
@@ -1098,11 +1181,17 @@ public class ChatService {
         return response.getResult().getOutput().getText();
     }
 
+    private ChatResponse llmFallbackResponse() {
+        return new ChatResponse(List.of(new Generation(
+                new AssistantMessage(ResilienceConstants.LLM_FALLBACK_MESSAGE))));
+    }
+
     private void handleStreamError(String sid,
                                    SseEmitter emitter,
                                    ChatTurnLifecycle turnLifecycle,
                                    Throwable err,
-                                   Map<String, String> streamMdcSnapshot) {
+                                   Map<String, String> streamMdcSnapshot,
+                                   Runnable persistTraceOnce) {
         if (streamMdcSnapshot != null) {
             MDC.setContextMap(streamMdcSnapshot);
         }
@@ -1113,9 +1202,11 @@ public class ChatService {
         }
         safeError(emitter, err);
         turnLifecycle.error(err);
+        persistTraceOnce.run();
     }
 
-    private void handleStreamCompletion(String sid,
+    private void handleStreamCompletion(String turnId,
+                                        String sid,
                                         String userInput,
                                         SseEmitter emitter,
                                         AssistantBuf assistantBuf,
@@ -1124,17 +1215,20 @@ public class ChatService {
                                         Long streamUserId,
                                         Map<String, String> streamMdcSnapshot,
                                         ChatTurnLifecycle turnLifecycle,
-                                        boolean updateAgentState) {
+                                        boolean updateAgentState,
+                                        AtomicBoolean normalCompletion,
+                                        Runnable persistTraceOnce) {
         String full = assistantBuf.full.toString().trim();
-        StructuredAnswer structuredAnswer = evidenceAssembler.assemble(userInput, full, buildResult.sources());
-        String finalAnswer = structuredAnswer == null ? full : structuredAnswer.renderedMarkdown();
         if (streamUserSnapshot != null) {
             UserContextHolder.set(streamUserSnapshot);
         }
         if (streamMdcSnapshot != null) {
             MDC.setContextMap(streamMdcSnapshot);
         }
+        TraceContext.setTurnId(turnId);
         try {
+            StructuredAnswer structuredAnswer = evidenceAssembler.assemble(userInput, full, buildResult.sources());
+            String finalAnswer = structuredAnswer == null ? full : structuredAnswer.renderedMarkdown();
             ChatMessageDTO userMsg = ChatMessageDTO.of("user", userInput);
             ChatMessageDTO assistantMsg = finalAnswer.isBlank()
                     ? null
@@ -1160,14 +1254,20 @@ public class ChatService {
                 safeSend(emitter, "answer", structuredAnswer);
             }
             safeSend(emitter, "done", finalAnswer);
+            CompletableFuture<Void> longTermFuture = triggerLongTermMemoryIngestion(
+                    turnId, streamUserId, sid, userInput, streamMdcSnapshot);
+            CompletableFuture<Void> maintenanceFuture = triggerShortTermMaintenance(
+                    turnId, streamUserSnapshot, streamUserId, sid,
+                    buildResult.skipMaintenanceCompression(), streamMdcSnapshot);
+            normalCompletion.set(true);
             turnLifecycle.success();
             emitter.complete();
-            triggerLongTermMemoryIngestion(streamUserId, sid, userInput, streamMdcSnapshot);
-            triggerShortTermMaintenance(streamUserSnapshot, streamUserId, sid,
-                    buildResult.skipMaintenanceCompression(), streamMdcSnapshot);
+            CompletableFuture.allOf(longTermFuture, maintenanceFuture)
+                    .whenComplete((unused, backgroundError) -> persistTraceOnce.run());
         } finally {
             UserContextHolder.clear();
             MDC.clear();
+            TraceContext.clear();
         }
     }
 

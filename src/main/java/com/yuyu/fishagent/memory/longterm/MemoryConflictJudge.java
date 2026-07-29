@@ -1,5 +1,8 @@
 package com.yuyu.fishagent.memory.longterm;
 
+import com.yuyu.fishagent.common.resilience.CircuitBreakerHelper;
+import com.yuyu.fishagent.common.resilience.ResilienceConstants;
+import com.yuyu.fishagent.common.trace.PromptTraceSupport;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
@@ -30,9 +33,15 @@ public class MemoryConflictJudge {
             """;
 
     private final ObjectProvider<ChatModel> chatModelProvider;
+    private final PromptTraceSupport promptTraceSupport;
+    private final CircuitBreakerHelper circuitBreakerHelper;
 
-    public MemoryConflictJudge(@Qualifier("memoryChatModel") ObjectProvider<ChatModel> chatModelProvider) {
+    public MemoryConflictJudge(@Qualifier("memoryChatModel") ObjectProvider<ChatModel> chatModelProvider,
+                               PromptTraceSupport promptTraceSupport,
+                               CircuitBreakerHelper circuitBreakerHelper) {
         this.chatModelProvider = chatModelProvider;
+        this.promptTraceSupport = promptTraceSupport;
+        this.circuitBreakerHelper = circuitBreakerHelper;
     }
 
     public Verdict judge(String candidateFact, SimilarFact existingFact) {
@@ -51,10 +60,13 @@ public class MemoryConflictJudge {
                             旧事实：
                             %s
 
-                            新事实：
-                            %s
-                            """.formatted(existingFact.content().trim(), candidateFact.trim())));
-            String raw = model.call(prompt).getResult().getOutput().getText();
+                    新事实：
+                    %s
+                    """.formatted(existingFact.content().trim(), candidateFact.trim())));
+            promptTraceSupport.recordCurrentTurnPrompt("memory-conflict-judge", prompt);
+            String raw = circuitBreakerHelper.executeWithCircuitBreaker(
+                    ResilienceConstants.CB_LLM,
+                    () -> model.call(prompt)).getResult().getOutput().getText();
             return parseVerdict(raw);
         } catch (Exception e) {
             log.warn("[MemoryConflictJudge] 判定失败，按 NEITHER 处理: {}", e.getMessage());

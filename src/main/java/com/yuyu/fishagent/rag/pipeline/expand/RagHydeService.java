@@ -1,6 +1,9 @@
 package com.yuyu.fishagent.rag.pipeline.expand;
 
+import com.yuyu.fishagent.common.resilience.CircuitBreakerHelper;
+import com.yuyu.fishagent.common.resilience.ResilienceConstants;
 import com.yuyu.fishagent.common.trace.MdcAsync;
+import com.yuyu.fishagent.common.trace.PromptTraceSupport;
 import com.yuyu.fishagent.rag.config.RagProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.SystemMessage;
@@ -26,10 +29,21 @@ public final class RagHydeService {
 
     private final ObjectProvider<ChatModel> chatModelProvider;
     private final RagProperties ragProperties;
+    private final PromptTraceSupport promptTraceSupport;
+    private final CircuitBreakerHelper circuitBreakerHelper;
 
     public RagHydeService(ObjectProvider<ChatModel> chatModelProvider, RagProperties ragProperties) {
+        this(chatModelProvider, ragProperties, null, null);
+    }
+
+    public RagHydeService(ObjectProvider<ChatModel> chatModelProvider,
+                          RagProperties ragProperties,
+                          PromptTraceSupport promptTraceSupport,
+                          CircuitBreakerHelper circuitBreakerHelper) {
         this.chatModelProvider = chatModelProvider;
         this.ragProperties = ragProperties;
+        this.promptTraceSupport = promptTraceSupport;
+        this.circuitBreakerHelper = circuitBreakerHelper;
     }
 
     public String generate(String query) {
@@ -46,7 +60,15 @@ public final class RagHydeService {
                 Prompt prompt = new Prompt(
                         new SystemMessage(SYSTEM_INSTRUCTION),
                         new UserMessage(query.trim()));
-                return model.call(prompt).getResult().getOutput().getText();
+                if (promptTraceSupport != null) {
+                    promptTraceSupport.recordCurrentTurnPrompt("rag-hyde", prompt);
+                }
+                if (circuitBreakerHelper == null) {
+                    return model.call(prompt).getResult().getOutput().getText();
+                }
+                return circuitBreakerHelper.executeWithCircuitBreaker(
+                        ResilienceConstants.CB_LLM,
+                        () -> model.call(prompt)).getResult().getOutput().getText();
             }).get(timeoutMs, TimeUnit.MILLISECONDS);
             return text == null || text.isBlank() ? null : text.trim();
         } catch (TimeoutException e) {

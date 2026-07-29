@@ -1,5 +1,8 @@
 package com.yuyu.fishagent.memory;
 
+import com.yuyu.fishagent.common.resilience.CircuitBreakerHelper;
+import com.yuyu.fishagent.common.resilience.ResilienceConstants;
+import com.yuyu.fishagent.common.trace.PromptTraceSupport;
 import com.yuyu.fishagent.memory.longterm.LongTermMemoryFactSanitizer;
 import com.yuyu.fishagent.memory.longterm.LongTermMemoryPromptBuilder;
 import com.yuyu.fishagent.memory.longterm.LongTermMemoryResponseParser;
@@ -29,6 +32,8 @@ public class LongTermMemoryIngestionService {
     private final LongTermMemoryPromptBuilder promptBuilder;
     private final LongTermMemoryResponseParser responseParser;
     private final LongTermMemoryStore longTermMemoryStore;
+    private final PromptTraceSupport promptTraceSupport;
+    private final CircuitBreakerHelper circuitBreakerHelper;
 
     /**
      * 根据当前用户输入主动录入长期事实。
@@ -51,7 +56,10 @@ public class LongTermMemoryIngestionService {
             log.debug("[LongTermMemoryIngestionService] 开始长期事实判断 sid={}, inputLen={}",
                     sessionId, userInput.length());
             Prompt prompt = promptBuilder.build(userInput);
-            ChatResponse response = chatModel.call(prompt);
+            promptTraceSupport.recordCurrentTurnPrompt("long-term-ingestion", prompt);
+            ChatResponse response = circuitBreakerHelper.executeWithCircuitBreaker(
+                    ResilienceConstants.CB_LLM,
+                    () -> chatModel.call(prompt));
             String output = response.getResult().getOutput().getText();
             List<String> facts = responseParser.parseFacts(output);
             List<String> toSave = LongTermMemoryFactSanitizer.forIndexing(facts);

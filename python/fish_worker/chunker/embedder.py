@@ -10,6 +10,7 @@ from typing import Any
 import httpx
 
 from fish_worker.config import Settings
+from fish_worker.trace_context import current_trace_headers
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +40,7 @@ class Embedder:
             response = self._post_with_retry(
                 client,
                 f"{base}/api/embeddings",
+                headers=current_trace_headers(),
                 json={"model": model, "prompt": "fish-worker embedding warmup"},
             )
             data = response.json()
@@ -74,6 +76,7 @@ class Embedder:
                 response = self._post_with_retry(
                     client,
                     f"{base}/api/embeddings",
+                    headers=current_trace_headers(),
                     json={"model": model, "prompt": text},
                 )
                 data = response.json()
@@ -90,7 +93,7 @@ class Embedder:
             raise ValueError("OLLAMA_EMBEDDING_MODEL 不能为空")
 
         base = self._s.ollama_base_url.rstrip("/")
-        response = client.get(f"{base}/api/tags")
+        response = client.get(f"{base}/api/tags", headers=current_trace_headers() or None)
         response.raise_for_status()
         data = response.json()
         models = data.get("models")
@@ -131,10 +134,12 @@ class Embedder:
         """执行可重试 POST。"""
         max_retries = max(0, int(self._s.fish_worker_embed_max_retries))
         attempt = 0
+        request_headers = dict(headers or {})
+        request_headers.update(current_trace_headers())
 
         while True:
             try:
-                response = client.post(url, headers=headers, json=json)
+                response = client.post(url, headers=request_headers or None, json=json)
                 if response.status_code in _RETRYABLE_STATUS:
                     raise _RetryableHttpStatus(response)
                 response.raise_for_status()

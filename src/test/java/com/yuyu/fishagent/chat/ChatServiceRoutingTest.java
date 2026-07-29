@@ -12,6 +12,7 @@ import com.yuyu.fishagent.chat.router.QueryRouter;
 import com.yuyu.fishagent.chat.router.RouteDecision;
 import com.yuyu.fishagent.common.metrics.ChatMetrics;
 import com.yuyu.fishagent.common.ratelimit.RateLimitService;
+import com.yuyu.fishagent.common.trace.PromptTraceSupport;
 import com.yuyu.fishagent.common.trace.TraceCollector;
 import com.yuyu.fishagent.common.trace.TraceFileWriter;
 import com.yuyu.fishagent.common.trace.TraceProperties;
@@ -26,6 +27,7 @@ import com.yuyu.fishagent.memory.config.MemoryProperties;
 import com.yuyu.fishagent.memory.shortterm.ShortTermMemoryService;
 import com.yuyu.fishagent.memory.shortterm.ShortTermMemorySnapshot;
 import com.yuyu.fishagent.rag.pipeline.recall.RagRecall;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -46,6 +48,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -71,8 +74,11 @@ class ChatServiceRoutingTest {
         verify(chatAgent, never()).stream(any(), anyString(), anyString());
         verify(fastRagChatModel).stream(any(Prompt.class));
         ArgumentCaptor<TurnTrace> captor = ArgumentCaptor.forClass(TurnTrace.class);
-        verify(traceFileWriter).persistAsync(captor.capture());
+        verify(traceFileWriter, timeout(1000)).persistAsync(captor.capture());
         assertThat(captor.getValue().getRoute()).isEqualTo("FAST_RAG");
+        assertThat(captor.getValue().getPrompts())
+                .extracting(TurnTrace.PromptCall::getStage)
+                .contains("fast-rag-main");
     }
 
     @Test
@@ -95,8 +101,11 @@ class ChatServiceRoutingTest {
         verify(chatAgent).stream(any(), anyString(), anyString());
         verify(fastRagChatModel, never()).stream(any(Prompt.class));
         ArgumentCaptor<TurnTrace> captor = ArgumentCaptor.forClass(TurnTrace.class);
-        verify(traceFileWriter).persistAsync(captor.capture());
+        verify(traceFileWriter, timeout(1000)).persistAsync(captor.capture());
         assertThat(captor.getValue().getRoute()).isEqualTo("TROUBLESHOOTING_AGENT");
+        assertThat(captor.getValue().getPrompts())
+                .extracting(TurnTrace.PromptCall::getStage)
+                .contains("agent-main");
     }
 
     private ChatService newService(ChatAgent chatAgent,
@@ -115,6 +124,7 @@ class ChatServiceRoutingTest {
         ActiveChatModelContext activeChatModelContext = mock(ActiveChatModelContext.class);
         when(activeChatModelContext.activeModelName()).thenReturn("deepseek-v4-flash");
         when(activeChatModelContext.effectiveContextWindow()).thenReturn(32_768);
+        TraceCollector traceCollector = new TraceCollector(new TraceProperties());
 
         return new ChatService(
                 chatAgent,
@@ -135,9 +145,11 @@ class ChatServiceRoutingTest {
                 new ObjectMapper(),
                 new FishLlmProperties(),
                 activeChatModelContext,
-                new TraceCollector(new TraceProperties()),
+                traceCollector,
                 traceFileWriter,
                 mock(ToolResultGovernor.class),
-                mock(EvidenceAssembler.class));
+                mock(EvidenceAssembler.class),
+                CircuitBreakerRegistry.ofDefaults(),
+                new PromptTraceSupport(traceCollector));
     }
 }

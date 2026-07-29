@@ -2,7 +2,10 @@ package com.yuyu.fishagent.rag.pipeline.expand;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yuyu.fishagent.common.resilience.CircuitBreakerHelper;
+import com.yuyu.fishagent.common.resilience.ResilienceConstants;
 import com.yuyu.fishagent.common.trace.MdcAsync;
+import com.yuyu.fishagent.common.trace.PromptTraceSupport;
 import com.yuyu.fishagent.rag.config.RagProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.SystemMessage;
@@ -128,11 +131,23 @@ public final class RagQueryExpand {
         private final ChatModel chatModel;
         private final RagProperties ragProperties;
         private final ObjectMapper objectMapper;
+        private final PromptTraceSupport promptTraceSupport;
+        private final CircuitBreakerHelper circuitBreakerHelper;
 
         public LlmQueryDecomposer(ChatModel chatModel, RagProperties ragProperties, ObjectMapper objectMapper) {
+            this(chatModel, ragProperties, objectMapper, null, null);
+        }
+
+        public LlmQueryDecomposer(ChatModel chatModel,
+                                  RagProperties ragProperties,
+                                  ObjectMapper objectMapper,
+                                  PromptTraceSupport promptTraceSupport,
+                                  CircuitBreakerHelper circuitBreakerHelper) {
             this.chatModel = chatModel;
             this.ragProperties = ragProperties;
             this.objectMapper = objectMapper;
+            this.promptTraceSupport = promptTraceSupport;
+            this.circuitBreakerHelper = circuitBreakerHelper;
         }
 
         @Override
@@ -151,7 +166,15 @@ public final class RagQueryExpand {
                                     contextHint != null && !contextHint.isBlank()
                                         ? RagQueryDecomposePrompt.userSegmentWithContext(original, contextHint)
                                         : RagQueryDecomposePrompt.userSegment(original)));
-                    return chatModel.call(prompt).getResult().getOutput().getText();
+                    if (promptTraceSupport != null) {
+                        promptTraceSupport.recordCurrentTurnPrompt("rag-expand", prompt);
+                    }
+                    if (circuitBreakerHelper == null) {
+                        return chatModel.call(prompt).getResult().getOutput().getText();
+                    }
+                    return circuitBreakerHelper.executeWithCircuitBreaker(
+                            ResilienceConstants.CB_LLM,
+                            () -> chatModel.call(prompt)).getResult().getOutput().getText();
                 });
                 String raw = future.get(Math.max(1, cfg.getTimeoutMs()), TimeUnit.MILLISECONDS);
                 List<String> result = parseAndValidate(

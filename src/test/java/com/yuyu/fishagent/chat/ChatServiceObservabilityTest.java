@@ -10,6 +10,9 @@ import com.yuyu.fishagent.chat.router.RouteDecision;
 import com.yuyu.fishagent.chat.history.ChatMemoryStore;
 import com.yuyu.fishagent.common.metrics.ChatMetrics;
 import com.yuyu.fishagent.common.ratelimit.RateLimitService;
+import com.yuyu.fishagent.common.trace.PromptTraceSupport;
+import com.yuyu.fishagent.common.trace.TraceCollector;
+import com.yuyu.fishagent.common.trace.TraceProperties;
 import com.yuyu.fishagent.llm.config.ActiveChatModelContext;
 import com.yuyu.fishagent.llm.config.FishLlmProperties;
 import com.yuyu.fishagent.memory.LongTermMemoryIngestionService;
@@ -20,6 +23,7 @@ import com.yuyu.fishagent.memory.config.MemoryProperties;
 import com.yuyu.fishagent.memory.shortterm.ShortTermMemoryService;
 import com.yuyu.fishagent.memory.shortterm.ShortTermMemorySnapshot;
 import com.yuyu.fishagent.rag.pipeline.recall.RagRecall;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.model.ChatModel;
@@ -66,6 +70,7 @@ class ChatServiceObservabilityTest {
         when(activeChatModelContext.effectiveContextWindow()).thenReturn(32_768);
         ChatModel fastRagChatModel = mock(ChatModel.class);
         QueryRouter queryRouter = input -> RouteDecision.troubleshootingAgent("test");
+        TraceCollector traceCollector = new TraceCollector(new TraceProperties());
 
         ChatService service = new ChatService(
                 chatAgent,
@@ -86,10 +91,12 @@ class ChatServiceObservabilityTest {
                 new ObjectMapper(),
                 new FishLlmProperties(),
                 activeChatModelContext,
-                new com.yuyu.fishagent.common.trace.TraceCollector(new com.yuyu.fishagent.common.trace.TraceProperties()),
+                traceCollector,
                 mock(com.yuyu.fishagent.common.trace.TraceFileWriter.class),
                 mock(com.yuyu.fishagent.agent.tool.result.ToolResultGovernor.class),
-                mock(EvidenceAssembler.class));
+                mock(EvidenceAssembler.class),
+                CircuitBreakerRegistry.ofDefaults(),
+                new PromptTraceSupport(traceCollector));
 
         SseEmitter emitter = mock(SseEmitter.class);
         doAnswer(invocation -> {

@@ -1,6 +1,7 @@
 package com.yuyu.fishagent.rag.service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.yuyu.fishagent.common.trace.TraceConstants;
 import com.yuyu.fishagent.rag.config.KnowledgeProperties;
 import com.yuyu.fishagent.rag.dto.MultipartPartInfo;
 import com.yuyu.fishagent.rag.entity.DocumentMetadata;
@@ -8,6 +9,7 @@ import com.yuyu.fishagent.rag.mapper.DocumentMetadataMapper;
 import com.yuyu.fishagent.rag.service.RustFsService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.data.redis.connection.stream.RecordId;
@@ -324,10 +326,19 @@ public class KnowledgeIngestionService {
         body.put("user_id", String.valueOf(userId));
         body.put("file_name", fileName == null ? "" : fileName);
         body.put("file_size", String.valueOf(fileSize));
+        body.put("trace_id", currentTraceId(taskId));
 
         MapRecord<String, String, String> record = StreamRecords.mapBacked(body).withStreamKey(streamKey);
         RecordId recordId = redis.opsForStream().add(record);
         log.debug("[KnowledgeIngestion] XADD {} -> {}", streamKey, recordId);
+    }
+
+    private static String currentTraceId(String taskId) {
+        String traceId = MDC.get(TraceConstants.TRACE_ID);
+        if (traceId == null || traceId.isBlank()) {
+            return taskId;
+        }
+        return traceId.trim();
     }
 
     private static String sanitizeFileName(String name) {

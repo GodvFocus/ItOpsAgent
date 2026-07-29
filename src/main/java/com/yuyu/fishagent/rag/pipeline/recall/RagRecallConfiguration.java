@@ -5,6 +5,7 @@ import com.yuyu.fishagent.rag.pipeline.expand.RagHydeService;
 import com.yuyu.fishagent.rag.pipeline.query.RagQueryRewrite;
 import com.yuyu.fishagent.common.metrics.ChatMetrics;
 import com.yuyu.fishagent.common.resilience.CircuitBreakerHelper;
+import com.yuyu.fishagent.common.trace.PromptTraceSupport;
 import com.yuyu.fishagent.rag.config.KnowledgeProperties;
 import com.yuyu.fishagent.rag.config.RagProperties;
 import com.yuyu.fishagent.card.mapper.CardRelationMapper;
@@ -42,8 +43,10 @@ public class RagRecallConfiguration {
     @Bean
     public RagHydeService ragHydeService(
             @Qualifier("memoryChatModel") ObjectProvider<ChatModel> memoryChatModelProvider,
-            RagProperties ragProperties) {
-        return new RagHydeService(memoryChatModelProvider, ragProperties);
+            RagProperties ragProperties,
+            PromptTraceSupport promptTraceSupport,
+            CircuitBreakerHelper circuitBreakerHelper) {
+        return new RagHydeService(memoryChatModelProvider, ragProperties, promptTraceSupport, circuitBreakerHelper);
     }
 
     @Bean

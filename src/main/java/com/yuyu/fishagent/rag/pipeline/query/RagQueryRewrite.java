@@ -2,6 +2,9 @@ package com.yuyu.fishagent.rag.pipeline.query;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yuyu.fishagent.common.resilience.CircuitBreakerHelper;
+import com.yuyu.fishagent.common.resilience.ResilienceConstants;
+import com.yuyu.fishagent.common.trace.PromptTraceSupport;
 import com.yuyu.fishagent.rag.config.RagProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.SystemMessage;
@@ -69,12 +72,24 @@ public final class RagQueryRewrite {
         private final ChatModel chatModel;
         private final RagProperties ragProperties;
         private final ObjectMapper objectMapper;
+        private final PromptTraceSupport promptTraceSupport;
+        private final CircuitBreakerHelper circuitBreakerHelper;
         private final IdentityRewriter fallback = new IdentityRewriter();
 
         public ChatModelRewriter(ChatModel chatModel, RagProperties ragProperties, ObjectMapper objectMapper) {
+            this(chatModel, ragProperties, objectMapper, null, null);
+        }
+
+        public ChatModelRewriter(ChatModel chatModel,
+                                 RagProperties ragProperties,
+                                 ObjectMapper objectMapper,
+                                 PromptTraceSupport promptTraceSupport,
+                                 CircuitBreakerHelper circuitBreakerHelper) {
             this.chatModel = chatModel;
             this.ragProperties = ragProperties;
             this.objectMapper = objectMapper;
+            this.promptTraceSupport = promptTraceSupport;
+            this.circuitBreakerHelper = circuitBreakerHelper;
         }
 
         @Override
@@ -89,7 +104,15 @@ public final class RagQueryRewrite {
                         new SystemMessage(STRICT_JSON_INSTRUCTION),
                         new UserMessage("用户原始输入（仅用于改写，不要作答）：\n" + normalized)
                 );
-                String raw = chatModel.call(prompt).getResult().getOutput().getText();
+                if (promptTraceSupport != null) {
+                    promptTraceSupport.recordCurrentTurnPrompt("rag-rewrite", prompt);
+                }
+                String raw = (circuitBreakerHelper == null
+                        ? chatModel.call(prompt)
+                        : circuitBreakerHelper.executeWithCircuitBreaker(
+                                ResilienceConstants.CB_LLM,
+                                () -> chatModel.call(prompt)))
+                        .getResult().getOutput().getText();
                 if (raw == null || raw.isBlank()) {
                     log.debug("[RagQueryRewrite.ChatModelRewriter] 模型输出为空，回退规范化原文");
                     return normalized;

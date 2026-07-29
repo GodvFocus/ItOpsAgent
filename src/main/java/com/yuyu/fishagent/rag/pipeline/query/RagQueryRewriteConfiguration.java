@@ -1,6 +1,8 @@
 package com.yuyu.fishagent.rag.pipeline.query;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yuyu.fishagent.common.resilience.CircuitBreakerHelper;
+import com.yuyu.fishagent.common.trace.PromptTraceSupport;
 import com.yuyu.fishagent.rag.config.RagProperties;
 import com.yuyu.fishagent.rag.config.RagProperties.RewriteProvider;
 import lombok.extern.slf4j.Slf4j;
@@ -20,11 +22,14 @@ public class RagQueryRewriteConfiguration {
     public RagQueryRewrite.QueryRewriter queryRewriter(
             RagProperties ragProperties,
             ObjectProvider<ChatModel> chatModelProvider,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            PromptTraceSupport promptTraceSupport,
+            CircuitBreakerHelper circuitBreakerHelper) {
         if (ragProperties.getRewriteProvider() == RewriteProvider.CHAT_MODEL) {
             ChatModel model = chatModelProvider.getIfAvailable();
             if (model != null) {
-                return new RagQueryRewrite.ChatModelRewriter(model, ragProperties, objectMapper);
+                return new RagQueryRewrite.ChatModelRewriter(
+                        model, ragProperties, objectMapper, promptTraceSupport, circuitBreakerHelper);
             }
             log.warn("[RagQueryRewriteConfiguration] rewrite-provider=CHAT_MODEL 但 ChatModel 不可用，回退 IdentityRewriter");
         }

@@ -29,4 +29,5 @@ public class TraceProperties {
 
     /** 单个片段字段最大字符数，避免 trace 存全文。 */
     private int snippetMaxChars = 200;
+
 }

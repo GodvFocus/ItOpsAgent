@@ -7,6 +7,7 @@ from unittest.mock import patch
 import httpx
 
 from fish_worker.chunker.embedder import Embedder
+from fish_worker.trace_context import bind_trace_id
 
 
 class FakeResponse:
@@ -36,6 +37,8 @@ class FakeClient:
         self._outcomes = outcomes
         self.calls = 0
         self.trust_env = None
+        self.post_kwargs: list[dict] = []
+        self.get_kwargs: list[dict] = []
 
     def __enter__(self):
         return self
@@ -45,12 +48,14 @@ class FakeClient:
 
     def post(self, *args, **kwargs) -> FakeResponse:
         self.calls += 1
+        self.post_kwargs.append(kwargs)
         outcome = self._outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
         return outcome
 
     def get(self, *args, **kwargs) -> FakeResponse:
+        self.get_kwargs.append(kwargs)
         outcome = self._outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
@@ -124,6 +129,33 @@ class EmbedderRetryTest(unittest.TestCase):
         model = Embedder(retry_settings())._resolve_ollama_model(client)
 
         self.assertEqual("bge-m3:latest", model)
+
+    def test_post_with_retry_propagates_trace_header(self) -> None:
+        client = FakeClient([FakeResponse(200)])
+
+        with bind_trace_id("trace-python-1"):
+            response = Embedder(retry_settings())._post_with_retry(client, "https://example.test")
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("trace-python-1", client.post_kwargs[0]["headers"]["X-Request-Id"])
+
+    def test_resolve_ollama_model_propagates_trace_header(self) -> None:
+        client = FakeClient([
+            FakeResponse(
+                200,
+                json_data={
+                    "models": [
+                        {"name": "bge-m3:latest"},
+                    ]
+                },
+            )
+        ])
+
+        with bind_trace_id("trace-python-2"):
+            model = Embedder(retry_settings())._resolve_ollama_model(client)
+
+        self.assertEqual("bge-m3:latest", model)
+        self.assertEqual("trace-python-2", client.get_kwargs[0]["headers"]["X-Request-Id"])
 
     @patch("fish_worker.chunker.embedder.httpx.Client")
     def test_ollama_client_disables_env_proxy(self, client_cls) -> None:

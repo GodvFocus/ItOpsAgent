@@ -39,4 +39,17 @@ public class CircuitBreakerHelper {
             return fallback;
         }
     }
+
+    /**
+     * 在指定熔断器保护下执行同步调用；熔断打开时继续抛出异常，由调用方决定如何降级。
+     */
+    public <T> T executeWithCircuitBreaker(String name, Supplier<T> action) {
+        CircuitBreaker circuitBreaker = registry.circuitBreaker(name);
+        try {
+            return circuitBreaker.executeSupplier(action);
+        } catch (CallNotPermittedException e) {
+            log.warn("[CircuitBreaker] {} 已打开，拒绝本次调用", name);
+            throw e;
+        }
+    }
 }

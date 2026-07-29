@@ -98,6 +98,13 @@ public class TraceFileWriter {
         total += length(trace.getRouteReason());
         total += length(trace.getRagInjected());
         total += length(trace.getMemoryInjected());
+        for (TurnTrace.PromptCall prompt : trace.getPrompts()) {
+            total += 128;
+            total += length(prompt.getStage());
+            total += length(prompt.getStatus());
+            total += length(prompt.getFingerprint());
+            total += listChars(prompt.getSegmentLengths());
+        }
         for (TurnTrace.Node node : trace.getNodes()) {
             total += 64;
             total += length(node.getType());
@@ -110,5 +117,12 @@ public class TraceFileWriter {
 
     private int length(String value) {
         return value == null ? 0 : value.length();
+    }
+
+    private int listChars(java.util.List<Integer> values) {
+        if (values == null || values.isEmpty()) {
+            return 0;
+        }
+        return values.size() * 8;
     }
 }

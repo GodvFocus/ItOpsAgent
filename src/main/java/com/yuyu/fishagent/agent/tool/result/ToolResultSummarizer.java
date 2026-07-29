@@ -1,5 +1,8 @@
 package com.yuyu.fishagent.agent.tool.result;
 
+import com.yuyu.fishagent.common.resilience.CircuitBreakerHelper;
+import com.yuyu.fishagent.common.resilience.ResilienceConstants;
+import com.yuyu.fishagent.common.trace.PromptTraceSupport;
 import com.yuyu.fishagent.common.util.TextTruncator;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.SystemMessage;
@@ -22,9 +25,15 @@ import java.util.List;
 public class ToolResultSummarizer {
 
     private final ObjectProvider<ChatModel> chatModelProvider;
+    private final PromptTraceSupport promptTraceSupport;
+    private final CircuitBreakerHelper circuitBreakerHelper;
 
-    public ToolResultSummarizer(@Qualifier("memoryChatModel") ObjectProvider<ChatModel> chatModelProvider) {
+    public ToolResultSummarizer(@Qualifier("memoryChatModel") ObjectProvider<ChatModel> chatModelProvider,
+                                PromptTraceSupport promptTraceSupport,
+                                CircuitBreakerHelper circuitBreakerHelper) {
         this.chatModelProvider = chatModelProvider;
+        this.promptTraceSupport = promptTraceSupport;
+        this.circuitBreakerHelper = circuitBreakerHelper;
     }
 
     public String summarize(String toolName, String input, String result, int budgetTokens) {
@@ -50,7 +59,10 @@ public class ToolResultSummarizer {
                             %s
                             """.formatted(toolName, input == null ? "" : input, Math.max(1, budgetTokens), compressed))
             ));
-            return model.call(prompt).getResult().getOutput().getText();
+            promptTraceSupport.recordCurrentTurnPrompt("tool-result-summary", prompt);
+            return circuitBreakerHelper.executeWithCircuitBreaker(
+                    ResilienceConstants.CB_LLM,
+                    () -> model.call(prompt)).getResult().getOutput().getText();
         } catch (Exception e) {
             log.warn("[ToolResultSummarizer] 工具结果摘要失败 tool={}: {}", toolName, e.getMessage());
             return null;

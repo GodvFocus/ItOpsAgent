@@ -2,6 +2,9 @@ package com.yuyu.fishagent.chat.answer;
 
 import com.yuyu.fishagent.chat.dto.SourceRef;
 import com.yuyu.fishagent.chat.dto.StructuredAnswer;
+import com.yuyu.fishagent.common.resilience.CircuitBreakerHelper;
+import com.yuyu.fishagent.common.resilience.ResilienceConstants;
+import com.yuyu.fishagent.common.trace.PromptTraceSupport;
 import com.yuyu.fishagent.rag.pipeline.recall.RagRecall;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -24,15 +27,21 @@ public class EvidenceAssembler {
     private final StructuredAnswerPromptBuilder promptBuilder;
     private final StructuredAnswerParser parser;
     private final StructuredAnswerRenderer renderer;
+    private final PromptTraceSupport promptTraceSupport;
+    private final CircuitBreakerHelper circuitBreakerHelper;
 
     public EvidenceAssembler(@Qualifier("memoryChatModel") ChatModel chatModel,
                              StructuredAnswerPromptBuilder promptBuilder,
                              StructuredAnswerParser parser,
-                             StructuredAnswerRenderer renderer) {
+                             StructuredAnswerRenderer renderer,
+                             PromptTraceSupport promptTraceSupport,
+                             CircuitBreakerHelper circuitBreakerHelper) {
         this.chatModel = chatModel;
         this.promptBuilder = promptBuilder;
         this.parser = parser;
         this.renderer = renderer;
+        this.promptTraceSupport = promptTraceSupport;
+        this.circuitBreakerHelper = circuitBreakerHelper;
     }
 
     public StructuredAnswer assemble(String userInput, String finalAnswer, List<RagRecall.RecallHit> hits) {
@@ -58,7 +67,10 @@ public class EvidenceAssembler {
     private StructuredAnswer tryModelStructuredAnswer(String userInput, String finalAnswer, List<SourceRef> evidences) {
         try {
             Prompt prompt = promptBuilder.build(userInput, finalAnswer, evidences);
-            String raw = chatModel.call(prompt).getResult().getOutput().getText();
+            promptTraceSupport.recordCurrentTurnPrompt("evidence-assembler", prompt);
+            String raw = circuitBreakerHelper.executeWithCircuitBreaker(
+                    ResilienceConstants.CB_LLM,
+                    () -> chatModel.call(prompt)).getResult().getOutput().getText();
             return parser.parse(raw, evidences);
         } catch (Exception e) {
             log.warn("[EvidenceAssembler] 结构化整理失败，回退规则装配: {}", e.getMessage());

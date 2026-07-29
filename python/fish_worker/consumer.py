@@ -30,6 +30,7 @@ import redis
 
 from fish_worker.deps import WorkerContext
 from fish_worker.processor import IngestProcessor, IngestTask
+from fish_worker.trace_context import TRACE_FIELD_NAME, bind_trace_id
 
 log = logging.getLogger(__name__)
 
@@ -58,6 +59,7 @@ def _fields_to_task(fields: dict[str, str]) -> IngestTask:
         user_id=fields.get("user_id", "").strip(),
         file_name=fields.get("file_name", "").strip(),
         file_size=fields.get("file_size"),
+        trace_id=fields.get(TRACE_FIELD_NAME, "").strip() or fields.get("task_id", "").strip(),
     )
 
 
@@ -195,22 +197,24 @@ class StreamConsumer:
 
     def _handle_one(self, msg_id: str, fields: dict[str, str]) -> None:
         """处理单条 Stream 消息：解析 → 处理 → XACK（finally 保证无论如何都 ACK）。"""
-        try:
-            task = _fields_to_task(fields)
-            if not task.task_id or not task.minio_path:
-                log.error("invalid stream payload msg_id=%s fields=%s", msg_id, fields)
-                return  # finally 块仍会执行 XACK，避免垃圾消息滞留 PEL
-            self._processor.process(task)
-        except Exception:
-            log.exception("process failed msg_id=%s", msg_id)
-        finally:
-            # 关键：无论成功/失败/非法消息，都 XACK
-            # 失败任务已在 processor.py 中更新状态为 FAILED，不需要重试
-            # 不 XACK 会导致消息永驻 PEL → XAUTOCLAIM 反复认领 → 死循环
+        raw_trace_id = fields.get(TRACE_FIELD_NAME, "").strip() or fields.get("task_id", "").strip() or msg_id
+        with bind_trace_id(raw_trace_id):
             try:
-                self._redis.xack(self._stream, self._group, msg_id)
-            except redis.RedisError:
-                log.exception("XACK failed msg_id=%s", msg_id)
+                task = _fields_to_task(fields)
+                if not task.task_id or not task.minio_path:
+                    log.error("invalid stream payload msg_id=%s fields=%s", msg_id, fields)
+                    return  # finally 块仍会执行 XACK，避免垃圾消息滞留 PEL
+                self._processor.process(task)
+            except Exception:
+                log.exception("process failed msg_id=%s", msg_id)
+            finally:
+                # 关键：无论成功/失败/非法消息，都 XACK
+                # 失败任务已在 processor.py 中更新状态为 FAILED，不需要重试
+                # 不 XACK 会导致消息永驻 PEL → XAUTOCLAIM 反复认领 → 死循环
+                try:
+                    self._redis.xack(self._stream, self._group, msg_id)
+                except redis.RedisError:
+                    log.exception("XACK failed msg_id=%s", msg_id)
 
     # ----------- 主循环 -----------
 

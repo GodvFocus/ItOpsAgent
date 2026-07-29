@@ -83,6 +83,19 @@ public class TraceCollector {
         trace.getNodes().add(node);
     }
 
+    public void recordPrompt(String turnId, TurnTrace.PromptCall promptCall) {
+        TurnTrace trace = active.get(turnId);
+        if (trace == null || promptCall == null) {
+            return;
+        }
+        promptCall.setOrder(trace.getNextNodeOrder().getAndIncrement());
+        promptCall.setStage(promptCall.getStage() == null || promptCall.getStage().isBlank()
+                ? "llm-call" : promptCall.getStage());
+        promptCall.setStatus(promptCall.getStatus() == null || promptCall.getStatus().isBlank()
+                ? "SENT" : promptCall.getStatus());
+        trace.getPrompts().add(promptCall);
+    }
+
     public TurnTrace finishTurn(String turnId, ChatMetrics.Outcome outcome) {
         TurnTrace trace = active.get(turnId);
         if (trace == null || !trace.getCompleted().compareAndSet(false, true)) {

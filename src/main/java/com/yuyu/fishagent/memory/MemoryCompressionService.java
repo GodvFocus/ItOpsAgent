@@ -1,5 +1,8 @@
 package com.yuyu.fishagent.memory;
 
+import com.yuyu.fishagent.common.resilience.CircuitBreakerHelper;
+import com.yuyu.fishagent.common.resilience.ResilienceConstants;
+import com.yuyu.fishagent.common.trace.PromptTraceSupport;
 import com.yuyu.fishagent.memory.config.MemoryProperties;
 import com.yuyu.fishagent.memory.compress.MemoryPromptBuilder;
 import com.yuyu.fishagent.memory.compress.MemoryResponseParser;
@@ -35,6 +38,8 @@ public class MemoryCompressionService {
     private final MemoryResponseParser responseParser;
     private final ShortTermMemoryStore shortTermMemoryStore;
     private final MemoryProperties properties;
+    private final PromptTraceSupport promptTraceSupport;
+    private final CircuitBreakerHelper circuitBreakerHelper;
 
     /**
      * 截取最近 N 条消息作为滑动窗口，避免下一轮对话上下文无限增长。
@@ -84,7 +89,10 @@ public class MemoryCompressionService {
 
         log.debug("[MemoryCompressionService] 结构化压缩开始 sid={}, mode={}, incCount={}",
                 sessionId, reconciliation ? "对账" : "增量", incrementalCount);
-        ChatResponse response = chatModel.call(prompt);
+        promptTraceSupport.recordCurrentTurnPrompt("memory-compression", prompt);
+        ChatResponse response = circuitBreakerHelper.executeWithCircuitBreaker(
+                ResilienceConstants.CB_LLM,
+                () -> chatModel.call(prompt));
         String output = response.getResult().getOutput().getText();
         MemoryResponseParser.StructuredCompressionResult result = responseParser.parseStructured(output);
 

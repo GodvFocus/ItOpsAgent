@@ -29,6 +29,7 @@ from fish_worker.deps import WorkerContext
 from fish_worker.exceptions import UnsupportedFileTypeError
 from fish_worker.parser.factory import ParserFactory
 from fish_worker.parser.text_cleaner import clean_elements
+from fish_worker.trace_context import bind_trace_id
 
 log = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ class IngestProcessor:
         try:
             # 先标记 PROCESSING，防止其他 worker 通过 XAUTOCLAIM 重复认领
             self._db.update_status(task.task_id, "PROCESSING")
-            heartbeat_stop, heartbeat_thread = self._start_heartbeat(task.task_id)
+            heartbeat_stop, heartbeat_thread = self._start_heartbeat(task.task_id, task.trace_id)
 
             # ---- 步骤 1: 从 MinIO 下载原文件 ----
             # get_object 返回 (bytes, content_type)，content_type 来自上传时 Java 侧设置的 HTTP 头
@@ -181,14 +182,14 @@ class IngestProcessor:
             # 清理临时目录 —— 类似 Java 的 try-finally 关闭资源
             shutil.rmtree(tmp_root, ignore_errors=True)
 
-    def _start_heartbeat(self, task_id: str) -> tuple[threading.Event, threading.Thread]:
+    def _start_heartbeat(self, task_id: str, trace_id: str) -> tuple[threading.Event, threading.Thread]:
         """启动任务心跳线程，定期刷新 PROCESSING 行的 updated_at。"""
         stop = threading.Event()
         interval = max(1, int(self._settings.fish_worker_heartbeat_seconds))
         thread = threading.Thread(
             target=self._heartbeat_loop,
             name=f"fish-worker-heartbeat-{task_id}",
-            args=(task_id, stop, interval),
+            args=(task_id, trace_id, stop, interval),
             daemon=True,
         )
         thread.start()
@@ -205,25 +206,26 @@ class IngestProcessor:
         stop.set()
         thread.join(timeout=2.0)
 
-    def _heartbeat_loop(self, task_id: str, stop: threading.Event, interval: int) -> None:
+    def _heartbeat_loop(self, task_id: str, trace_id: str, stop: threading.Event, interval: int) -> None:
         """心跳循环：仅当任务仍是 PROCESSING 时刷新更新时间。"""
-        try:
-            while not stop.wait(interval):
-                try:
-                    affected = self._db.touch(task_id)
-                    if affected == 0:
-                        log.warning(
-                            "task_id=%s heartbeat skipped because status is no longer PROCESSING",
-                            task_id,
-                        )
-                        return
-                except Exception:
-                    # 心跳失败不直接杀死处理流程；终态 CAS 会做最终保护。
-                    log.exception("task_id=%s heartbeat failed", task_id)
-        finally:
-            close = getattr(self._db, "close_current_thread_conn", None)
-            if callable(close):
-                close()
+        with bind_trace_id(trace_id):
+            try:
+                while not stop.wait(interval):
+                    try:
+                        affected = self._db.touch(task_id)
+                        if affected == 0:
+                            log.warning(
+                                "task_id=%s heartbeat skipped because status is no longer PROCESSING",
+                                task_id,
+                            )
+                            return
+                    except Exception:
+                        # 心跳失败不直接杀死处理流程；终态 CAS 会做最终保护。
+                        log.exception("task_id=%s heartbeat failed", task_id)
+            finally:
+                close = getattr(self._db, "close_current_thread_conn", None)
+                if callable(close):
+                    close()
 
     def _mark_success(
         self,
@@ -272,7 +274,7 @@ class IngestTask:
         声明实例只允许有这些属性，禁止动态添加属性
         类比 Java 的 final class + 固定字段（但更强：连 __dict__ 都不会创建）
     """
-    __slots__ = ("task_id", "minio_path", "workspace_id", "visibility", "user_id", "file_name", "file_size")
+    __slots__ = ("task_id", "minio_path", "workspace_id", "visibility", "user_id", "file_name", "file_size", "trace_id")
 
     def __init__(
         self,
@@ -284,6 +286,7 @@ class IngestTask:
         user_id: str,
         file_name: str,
         file_size: str | None = None,
+        trace_id: str = "",
     ) -> None:
         self.task_id = task_id
         self.minio_path = minio_path
@@ -292,3 +295,4 @@ class IngestTask:
         self.user_id = user_id
         self.file_name = file_name
         self.file_size = file_size
+        self.trace_id = trace_id.strip() or task_id

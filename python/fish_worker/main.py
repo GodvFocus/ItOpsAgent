@@ -22,15 +22,17 @@ from fish_worker.deps import WorkerContext
 from fish_worker.health import start_health_server
 from fish_worker.storage.milvus import MilvusIndexer
 from fish_worker.storage.minio import DocObjectStore
+from fish_worker.trace_context import install_logging_trace_context
 
 
 def _setup_logging() -> None:
     # Python 的日志等价于 SLF4J + Logback：
     #   logging.basicConfig  = logback.xml 最小配置
     #   logging.getLogger()  = LoggerFactory.getLogger()
+    install_logging_trace_context()
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        format="%(asctime)s %(levelname)s [%(name)s] [traceId=%(trace_id)s] %(message)s",
         stream=sys.stdout,
     )
 

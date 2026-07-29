@@ -1,6 +1,8 @@
 package com.yuyu.fishagent.rag.pipeline.expand;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yuyu.fishagent.common.resilience.CircuitBreakerHelper;
+import com.yuyu.fishagent.common.trace.PromptTraceSupport;
 import com.yuyu.fishagent.rag.config.RagProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.model.ChatModel;
@@ -20,7 +22,9 @@ public class RagQueryExpandConfiguration {
     public RagQueryExpand.SubQueryExpander subQueryExpander(
             RagProperties ragProperties,
             @Qualifier("memoryChatModel") ObjectProvider<ChatModel> memoryChatModelProvider,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            PromptTraceSupport promptTraceSupport,
+            CircuitBreakerHelper circuitBreakerHelper) {
 
         RagProperties.Expand expand = ragProperties.getExpand();
         if (!expand.isEnabled()) {
@@ -33,7 +37,8 @@ public class RagQueryExpandConfiguration {
             case LLM -> {
                 ChatModel model = memoryChatModelProvider.getIfAvailable();
                 if (model != null) {
-                    yield new RagQueryExpand.LlmQueryDecomposer(model, ragProperties, objectMapper);
+                    yield new RagQueryExpand.LlmQueryDecomposer(
+                            model, ragProperties, objectMapper, promptTraceSupport, circuitBreakerHelper);
                 }
                 log.warn("[RagQueryExpandConfiguration] expand.strategy=LLM 但 memoryChatModel 不可用，回退 IdentityExpander");
                 yield new RagQueryExpand.IdentityExpander();
