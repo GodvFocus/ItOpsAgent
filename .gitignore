@@ -59,4 +59,6 @@ document/
 frontend/auto-imports.d.ts
 frontend/components.d.ts
 
+bash.exe.stackdump
+
 
