@@ -39,6 +39,9 @@ public class LogSearchToolProvider implements AgentToolProvider {
 
     public record Output(boolean ok,
                          String message,
+                         boolean untrustedInput,
+                         String trustLevel,
+                         String safetyReminder,
                          String windowStart,
                          String windowEnd,
                          int total,
@@ -77,13 +80,15 @@ public class LogSearchToolProvider implements AgentToolProvider {
                                     log.level(),
                                     TIME_FORMATTER.format(log.observedAt()),
                                     log.traceId(),
-                                    log.path(),
-                                    log.message()))
+                                    toolSupport.sanitizeEvidence(log.path()),
+                                    toolSupport.sanitizeEvidence(log.message())))
                             .toList();
-                    return new Output(true, "ok", window.startText(), window.endText(), hits.size(), hits);
+                    return new Output(true, "ok", true, toolSupport.trustLevel(), toolSupport.safetyReminder(),
+                            window.startText(), window.endText(), hits.size(), hits);
                 },
                 output -> "hits=" + output.total(),
-                error -> new Output(false, error, null, null, 0, List.of())
+                error -> new Output(false, toolSupport.redactForAudit(error), true, toolSupport.trustLevel(),
+                        toolSupport.safetyReminder(), null, null, 0, List.of())
         );
         return FunctionToolCallback.builder(name(), fn)
                 .description("按关键词、服务名、级别检索故障日志。query 可选但建议提供错误码/路径/异常特征；serviceName、level 可选；startTime/endTime 为 ISO-8601，默认最近 168 小时；limit 默认 5，最大 10。")

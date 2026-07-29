@@ -33,6 +33,9 @@ public class KnowledgeSearchToolProvider implements AgentToolProvider {
 
     public record Output(boolean ok,
                          String message,
+                         boolean untrustedInput,
+                         String trustLevel,
+                         String safetyReminder,
                          String windowStart,
                          String windowEnd,
                          int total,
@@ -56,23 +59,26 @@ public class KnowledgeSearchToolProvider implements AgentToolProvider {
                 input,
                 () -> {
                     if (input == null || input.query() == null || input.query().isBlank()) {
-                        return new Output(false, "query is required", null, null, 0, List.of());
+                        return new Output(false, "query is required", true, toolSupport.trustLevel(),
+                                toolSupport.safetyReminder(), null, null, 0, List.of());
                     }
                     TroubleshootingToolSupport.TimeWindow window = toolSupport.resolveWindow(input.startTime(), input.endTime());
                     int limit = toolSupport.resolveLimit(input.limit());
                     List<Hit> hits = dataService.searchKnowledge(input.query(), input.serviceName(), window, limit).stream()
                             .map(doc -> new Hit(
                                     doc.id(),
-                                    doc.title(),
-                                    doc.summary(),
+                                    toolSupport.sanitizeEvidence(doc.title()),
+                                    toolSupport.sanitizeEvidence(doc.summary()),
                                     doc.serviceName(),
                                     TIME_FORMATTER.format(doc.updatedAt()),
                                     doc.tags()))
                             .toList();
-                    return new Output(true, "ok", window.startText(), window.endText(), hits.size(), hits);
+                    return new Output(true, "ok", true, toolSupport.trustLevel(), toolSupport.safetyReminder(),
+                            window.startText(), window.endText(), hits.size(), hits);
                 },
                 output -> "hits=" + output.total(),
-                error -> new Output(false, error, null, null, 0, List.of())
+                error -> new Output(false, toolSupport.redactForAudit(error), true, toolSupport.trustLevel(),
+                        toolSupport.safetyReminder(), null, null, 0, List.of())
         );
         return FunctionToolCallback.builder(name(), fn)
                 .description("检索排障知识与 Runbook。适合查 SOP、错误码、接口路径、配置项。query 必填；serviceName 可选；startTime/endTime 为 ISO-8601，默认最近 168 小时；limit 默认 5，最大 10。")

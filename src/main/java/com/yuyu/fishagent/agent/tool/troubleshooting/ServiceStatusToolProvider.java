@@ -39,6 +39,9 @@ public class ServiceStatusToolProvider implements AgentToolProvider {
 
     public record Output(boolean ok,
                          String message,
+                         boolean untrustedInput,
+                         String trustLevel,
+                         String safetyReminder,
                          String windowStart,
                          String windowEnd,
                          int total,
@@ -62,7 +65,8 @@ public class ServiceStatusToolProvider implements AgentToolProvider {
                 input,
                 () -> {
                     if (input == null || input.serviceName() == null || input.serviceName().isBlank()) {
-                        return new Output(false, "serviceName is required", null, null, 0, List.of());
+                        return new Output(false, "serviceName is required", true, toolSupport.trustLevel(),
+                                toolSupport.safetyReminder(), null, null, 0, List.of());
                     }
                     TroubleshootingToolSupport.TimeWindow window = toolSupport.resolveWindow(input.startTime(), input.endTime());
                     int limit = toolSupport.resolveLimit(input.limit());
@@ -73,14 +77,16 @@ public class ServiceStatusToolProvider implements AgentToolProvider {
                                     snapshot.environment(),
                                     snapshot.status(),
                                     TIME_FORMATTER.format(snapshot.observedAt()),
-                                    snapshot.summary(),
-                                    snapshot.symptoms(),
-                                    snapshot.indicators()))
+                                    toolSupport.sanitizeEvidence(snapshot.summary()),
+                                    snapshot.symptoms().stream().map(toolSupport::sanitizeEvidence).toList(),
+                                    snapshot.indicators().stream().map(toolSupport::sanitizeEvidence).toList()))
                             .toList();
-                    return new Output(true, "ok", window.startText(), window.endText(), statuses.size(), statuses);
+                    return new Output(true, "ok", true, toolSupport.trustLevel(), toolSupport.safetyReminder(),
+                            window.startText(), window.endText(), statuses.size(), statuses);
                 },
                 output -> "statuses=" + output.total(),
-                error -> new Output(false, error, null, null, 0, List.of())
+                error -> new Output(false, toolSupport.redactForAudit(error), true, toolSupport.trustLevel(),
+                        toolSupport.safetyReminder(), null, null, 0, List.of())
         );
         return FunctionToolCallback.builder(name(), fn)
                 .description("查询指定服务在时间窗口内的状态快照。serviceName 必填；environment 可选；startTime/endTime 为 ISO-8601，默认最近 168 小时；limit 默认 5，最大 10。")

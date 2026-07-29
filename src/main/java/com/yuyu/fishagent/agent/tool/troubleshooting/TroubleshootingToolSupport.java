@@ -35,6 +35,7 @@ public class TroubleshootingToolSupport {
 
     private final TroubleshootingToolProperties properties;
     private final TraceCollector traceCollector;
+    private final TroubleshootingSecurityGuard securityGuard;
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
 
     @PreDestroy
@@ -103,16 +104,34 @@ public class TroubleshootingToolSupport {
                              boolean success,
                              long latencyMs,
                              String summary) {
+        String safeRequest = securityGuard.redactForAudit(snippet(String.valueOf(request)));
+        String safeSummary = securityGuard.redactForAudit(snippet(summary));
         String content = "tool=" + toolName
                 + ", success=" + success
                 + ", latencyMs=" + latencyMs
-                + ", request=" + snippet(String.valueOf(request))
-                + ", summary=" + snippet(summary);
+                + ", request=" + safeRequest
+                + ", summary=" + safeSummary;
         log.info("[TroubleshootingToolAudit] {}", content);
         if (turnId != null && !turnId.isBlank()) {
             traceCollector.recordNode(turnId, "tool-audit", "system", content, latencyMs,
                     success ? "SUCCESS" : "ERROR");
         }
+    }
+
+    public String sanitizeEvidence(String value) {
+        return securityGuard.sanitizeUntrustedEvidence(value);
+    }
+
+    public String redactForAudit(String value) {
+        return securityGuard.redactForAudit(value);
+    }
+
+    public String trustLevel() {
+        return securityGuard.trustLevel();
+    }
+
+    public String safetyReminder() {
+        return securityGuard.reminder();
     }
 
     private static long elapsedMs(long startNs) {

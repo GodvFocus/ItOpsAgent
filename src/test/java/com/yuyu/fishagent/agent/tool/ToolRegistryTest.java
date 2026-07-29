@@ -1,6 +1,7 @@
 package com.yuyu.fishagent.agent.tool;
 
 import com.yuyu.fishagent.agent.config.ToolProperties;
+import com.yuyu.fishagent.agent.tool.troubleshooting.TroubleshootingSecurityGuard;
 import com.yuyu.fishagent.agent.tool.result.LargeResultScratchStore;
 import com.yuyu.fishagent.agent.tool.result.ToolResultBudgeter;
 import com.yuyu.fishagent.agent.tool.result.ToolResultGovernor;
@@ -18,6 +19,7 @@ import java.lang.reflect.Method;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -90,5 +92,37 @@ class ToolRegistryTest {
         ObjectProvider<StringRedisTemplate> provider = mock(ObjectProvider.class);
         when(provider.getIfAvailable()).thenReturn(null);
         return new LargeResultScratchStore(provider, new ObjectMapper(), properties);
+    }
+
+    @Test
+    void troubleshootingToolShouldRejectUnexpectedHighRiskFieldBeforeExecution() {
+        AgentToolProvider provider = new AgentToolProvider() {
+            @Override
+            public String name() {
+                return "log_search_tool";
+            }
+
+            @Override
+            public ToolCallback build() {
+                return new ToolCallback() {
+                    @Override
+                    public String call(String toolInput) {
+                        return "{\"ok\":true}";
+                    }
+
+                    @Override
+                    public org.springframework.ai.tool.definition.ToolDefinition getToolDefinition() {
+                        return null;
+                    }
+                };
+            }
+        };
+        ToolRegistry registry = new ToolRegistry(List.of(provider), new ToolProperties(), null, new TroubleshootingSecurityGuard());
+        registry.init();
+
+        assertThatThrownBy(() -> registry.allCallbacks().get(0)
+                .call("{\"query\":\"error\",\"workspaceId\":2}"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("workspaceId");
     }
 }

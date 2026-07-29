@@ -9,6 +9,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class TroubleshootingToolProviderTest {
 
@@ -23,7 +24,7 @@ class TroubleshootingToolProviderTest {
     void knowledgeSearchToolShouldRespectLimitAndWriteAuditTrace() throws Exception {
         TroubleshootingToolProperties properties = new TroubleshootingToolProperties();
         TraceCollector traceCollector = new TraceCollector(new TraceProperties());
-        TroubleshootingToolSupport support = new TroubleshootingToolSupport(properties, traceCollector);
+        TroubleshootingToolSupport support = new TroubleshootingToolSupport(properties, traceCollector, new TroubleshootingSecurityGuard());
         try {
             KnowledgeSearchToolProvider provider = new KnowledgeSearchToolProvider(
                     properties, support, new MockTroubleshootingDataService());
@@ -47,7 +48,7 @@ class TroubleshootingToolProviderTest {
     void logSearchToolShouldFilterByWindowAndLevel() throws Exception {
         TroubleshootingToolProperties properties = new TroubleshootingToolProperties();
         TraceCollector traceCollector = new TraceCollector(new TraceProperties());
-        TroubleshootingToolSupport support = new TroubleshootingToolSupport(properties, traceCollector);
+        TroubleshootingToolSupport support = new TroubleshootingToolSupport(properties, traceCollector, new TroubleshootingSecurityGuard());
         try {
             LogSearchToolProvider provider = new LogSearchToolProvider(
                     properties, support, new MockTroubleshootingDataService());
@@ -76,7 +77,7 @@ class TroubleshootingToolProviderTest {
     void serviceStatusToolShouldRespectWindowAndLimit() throws Exception {
         TroubleshootingToolProperties properties = new TroubleshootingToolProperties();
         TraceCollector traceCollector = new TraceCollector(new TraceProperties());
-        TroubleshootingToolSupport support = new TroubleshootingToolSupport(properties, traceCollector);
+        TroubleshootingToolSupport support = new TroubleshootingToolSupport(properties, traceCollector, new TroubleshootingSecurityGuard());
         try {
             ServiceStatusToolProvider provider = new ServiceStatusToolProvider(
                     properties, support, new MockTroubleshootingDataService());
@@ -106,7 +107,7 @@ class TroubleshootingToolProviderTest {
         TroubleshootingToolProperties properties = new TroubleshootingToolProperties();
         properties.setTimeoutMs(1);
         TraceCollector traceCollector = new TraceCollector(new TraceProperties());
-        TroubleshootingToolSupport support = new TroubleshootingToolSupport(properties, traceCollector);
+        TroubleshootingToolSupport support = new TroubleshootingToolSupport(properties, traceCollector, new TroubleshootingSecurityGuard());
         try {
             traceCollector.startTurn("turn-timeout", "sid", "trace");
             TraceContext.setTurnId("turn-timeout");
@@ -135,5 +136,63 @@ class TroubleshootingToolProviderTest {
         } finally {
             support.shutdownExecutor();
         }
+    }
+
+    @Test
+    void knowledgeSearchToolShouldMarkInjectionSnippetAsUntrusted() throws Exception {
+        TroubleshootingToolProperties properties = new TroubleshootingToolProperties();
+        TraceCollector traceCollector = new TraceCollector(new TraceProperties());
+        TroubleshootingToolSupport support = new TroubleshootingToolSupport(properties, traceCollector, new TroubleshootingSecurityGuard());
+        try {
+            KnowledgeSearchToolProvider provider = new KnowledgeSearchToolProvider(
+                    properties, support, new MockTroubleshootingDataService());
+
+            String raw = provider.build().call("{\"query\":\"注入 prompt\",\"limit\":1}");
+            JsonNode root = objectMapper.readTree(raw);
+
+            assertThat(root.path("untrustedInput").asBoolean()).isTrue();
+            assertThat(root.path("trustLevel").asText()).isEqualTo("UNTRUSTED");
+            assertThat(root.path("hits").get(0).path("summary").asText()).contains("不可信输入");
+            assertThat(root.path("hits").get(0).path("summary").asText()).contains("已折叠潜在注入指令");
+            assertThat(root.path("hits").get(0).path("summary").asText()).doesNotContain("demo-token");
+        } finally {
+            support.shutdownExecutor();
+        }
+    }
+
+    @Test
+    void logSearchToolShouldRedactSensitiveFields() throws Exception {
+        TroubleshootingToolProperties properties = new TroubleshootingToolProperties();
+        TraceCollector traceCollector = new TraceCollector(new TraceProperties());
+        TroubleshootingToolSupport support = new TroubleshootingToolSupport(properties, traceCollector, new TroubleshootingSecurityGuard());
+        try {
+            LogSearchToolProvider provider = new LogSearchToolProvider(
+                    properties, support, new MockTroubleshootingDataService());
+
+            String raw = provider.build().call("{\"query\":\"secret\",\"serviceName\":\"order-service\",\"limit\":5}");
+            JsonNode root = objectMapper.readTree(raw);
+            String message = root.path("hits").get(0).path("message").asText();
+
+            assertThat(message).contains("不可信输入");
+            assertThat(message).contains("<REDACTED_SECRET>");
+            assertThat(message).contains("<REDACTED_EMAIL>");
+            assertThat(message).contains("<REDACTED_PHONE>");
+            assertThat(message).contains("<REDACTED_CONNECTION_STRING>");
+            assertThat(message).doesNotContain("ops@example.com");
+            assertThat(message).doesNotContain("13800138000");
+        } finally {
+            support.shutdownExecutor();
+        }
+    }
+
+    @Test
+    void securityGuardShouldRejectServerInjectedHighRiskField() {
+        TroubleshootingSecurityGuard guard = new TroubleshootingSecurityGuard();
+
+        assertThatThrownBy(() -> guard.validateRawToolInput(
+                "log_search_tool",
+                "{\"query\":\"error\",\"serviceName\":\"order-service\",\"workspaceId\":2}"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("workspaceId");
     }
 }

@@ -1,6 +1,7 @@
 package com.yuyu.fishagent.agent.tool;
 
 import com.yuyu.fishagent.agent.config.ToolProperties;
+import com.yuyu.fishagent.agent.tool.troubleshooting.TroubleshootingSecurityGuard;
 import com.yuyu.fishagent.agent.tool.result.ToolResultGovernor;
 import com.yuyu.fishagent.common.trace.TraceContext;
 import com.yuyu.fishagent.common.util.TextTruncator;
@@ -31,6 +32,7 @@ public class ToolRegistry {
     private final List<AgentToolProvider> providers;
     private final ToolProperties toolProperties;
     private final ToolResultGovernor toolResultGovernor;
+    private final TroubleshootingSecurityGuard troubleshootingSecurityGuard;
 
     private final List<ToolCallback> callbacks = new ArrayList<>();
     private final List<RegisteredTool> registeredTools = new ArrayList<>();
@@ -38,10 +40,14 @@ public class ToolRegistry {
     @Autowired
     public ToolRegistry(List<AgentToolProvider> providers,
                         ToolProperties toolProperties,
-                        ToolResultGovernor toolResultGovernor) {
+                        ToolResultGovernor toolResultGovernor,
+                        TroubleshootingSecurityGuard troubleshootingSecurityGuard) {
         this.providers = providers == null ? List.of() : providers;
         this.toolProperties = toolProperties;
         this.toolResultGovernor = toolResultGovernor;
+        this.troubleshootingSecurityGuard = troubleshootingSecurityGuard == null
+                ? new TroubleshootingSecurityGuard()
+                : troubleshootingSecurityGuard;
     }
 
     /**
@@ -51,6 +57,16 @@ public class ToolRegistry {
         this.providers = providers == null ? List.of() : providers;
         this.toolProperties = toolProperties;
         this.toolResultGovernor = null;
+        this.troubleshootingSecurityGuard = new TroubleshootingSecurityGuard();
+    }
+
+    public ToolRegistry(List<AgentToolProvider> providers,
+                        ToolProperties toolProperties,
+                        ToolResultGovernor toolResultGovernor) {
+        this.providers = providers == null ? List.of() : providers;
+        this.toolProperties = toolProperties;
+        this.toolResultGovernor = toolResultGovernor;
+        this.troubleshootingSecurityGuard = new TroubleshootingSecurityGuard();
     }
 
     @PostConstruct
@@ -144,6 +160,10 @@ public class ToolRegistry {
                 String summary = toolInput != null && toolInput.length() > 200
                         ? toolInput.substring(0, 200) + "..."
                         : toolInput;
+                if (troubleshootingSecurityGuard.isTroubleshootingTool(toolName)) {
+                    troubleshootingSecurityGuard.validateRawToolInput(toolName, toolInput);
+                    summary = troubleshootingSecurityGuard.redactForAudit(summary);
+                }
                 log.debug("[Tool] 调用工具: {}，输入: {}", toolName, summary);
                 String previousTurnId = TraceContext.currentTurnId();
                 if (turnId != null && !turnId.isBlank()) {
