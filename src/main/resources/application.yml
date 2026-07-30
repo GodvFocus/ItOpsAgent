@@ -368,6 +368,14 @@ fish:
     # 工具结果治理：统一在 ToolRegistry 做智能截断和长结果提示
     max-result-chars: 4000
     hint-threshold-chars: 1500
+    # 路由级工具白名单：FAST_RAG 不进入 Agent 工具链，排障路由只开放只读排障工具
+    route-allowlist:
+      FAST_RAG: []
+      TROUBLESHOOTING_AGENT:
+        - knowledge_search_tool
+        - log_search_tool
+        - service_status_tool
+        - search_large_result
     overrides:
       web_fetch: 6000
       file_read: 8000

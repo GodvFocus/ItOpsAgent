@@ -1,5 +1,7 @@
 package com.yuyu.fishagent.chat.dto;
 
+import com.yuyu.fishagent.common.evidence.Evidence;
+import com.yuyu.fishagent.common.evidence.EvidenceType;
 import com.yuyu.fishagent.rag.pipeline.recall.MemoryAgeLabel;
 import com.yuyu.fishagent.rag.pipeline.recall.RagRecall.RecallHit;
 
@@ -25,7 +27,7 @@ public record SourceRef(
 ) {
 
     public enum Kind {
-        MEMORY, DOC, CARD, PUBLIC
+        MEMORY, DOC, CARD, PUBLIC, LOG, STATUS, TICKET, TOOL
     }
 
     private static final int SNIPPET_MAX = 100;
@@ -62,6 +64,47 @@ public record SourceRef(
             }
         }
         return List.copyOf(out);
+    }
+
+    /** 将统一 Registry 中的证据映射为前后端共用的来源引用。 */
+    public static SourceRef from(Evidence evidence) {
+        if (evidence == null) {
+            return null;
+        }
+        Kind kind = switch (evidence.type()) {
+            case RAG -> kindFromRag(evidence);
+            case LOG -> Kind.LOG;
+            case STATUS_SNAPSHOT -> Kind.STATUS;
+            case TICKET -> Kind.TICKET;
+            case TOOL_RESULT -> Kind.TOOL;
+        };
+        boolean memory = "记忆".equals(evidence.metadata().get("sourceLabel"));
+        return new SourceRef(
+                evidence.label().isBlank() ? evidence.type().name() : evidence.label(),
+                memory ? Kind.MEMORY : kind,
+                evidence.sourceId(),
+                integerMetadata(evidence, "chunkIndex"),
+                snippet(evidence.snippet()),
+                memory,
+                evidence.metadata().getOrDefault("timeText", ""),
+                evidence.evidenceId());
+    }
+
+    private static Kind kindFromRag(Evidence evidence) {
+        if (evidence.sourceId().startsWith("card:")) {
+            return Kind.CARD;
+        }
+        String label = evidence.metadata().getOrDefault("sourceLabel", "");
+        return "公开".equals(label) || "官方".equals(label) ? Kind.PUBLIC : Kind.DOC;
+    }
+
+    private static Integer integerMetadata(Evidence evidence, String key) {
+        try {
+            String value = evidence.metadata().get(key);
+            return value == null ? null : Integer.valueOf(value);
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
     }
 
     private static SourceRef from(RecallHit hit, Clock clock, String evidenceId) {

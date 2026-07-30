@@ -9,6 +9,7 @@ import com.yuyu.fishagent.agent.tool.result.ToolResultProperties;
 import com.yuyu.fishagent.agent.tool.result.ToolResultSummarizer;
 import com.yuyu.fishagent.common.trace.TraceCollector;
 import com.yuyu.fishagent.common.trace.TraceProperties;
+import com.yuyu.fishagent.chat.router.QueryRoute;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.tool.ToolCallback;
@@ -17,6 +18,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 
 import java.lang.reflect.Method;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -124,5 +126,48 @@ class ToolRegistryTest {
                 .call("{\"query\":\"error\",\"workspaceId\":2}"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("workspaceId");
+    }
+
+    @Test
+    void routeCallbacksShouldExposeOnlyWhitelistedToolsAndRecheckAtCallTime() {
+        AgentToolProvider allowed = simpleProvider("log_search_tool");
+        AgentToolProvider denied = simpleProvider("file_write");
+        ToolProperties properties = new ToolProperties();
+        properties.setRouteAllowlist(Map.of(
+                "TROUBLESHOOTING_AGENT", List.of("log_search_tool")));
+        ToolRegistry registry = new ToolRegistry(List.of(allowed, denied), properties);
+        registry.init();
+
+        List<ToolCallback> routeCallbacks = registry.allCallbacks(QueryRoute.TROUBLESHOOTING_AGENT, "turn-1");
+        assertThat(routeCallbacks).hasSize(1);
+
+        properties.setRouteAllowlist(Map.of("TROUBLESHOOTING_AGENT", List.of()));
+        assertThatThrownBy(() -> routeCallbacks.get(0).call("{}"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("not allowed");
+    }
+
+    private AgentToolProvider simpleProvider(String name) {
+        return new AgentToolProvider() {
+            @Override
+            public String name() {
+                return name;
+            }
+
+            @Override
+            public ToolCallback build() {
+                return new ToolCallback() {
+                    @Override
+                    public String call(String toolInput) {
+                        return "{}";
+                    }
+
+                    @Override
+                    public org.springframework.ai.tool.definition.ToolDefinition getToolDefinition() {
+                        return null;
+                    }
+                };
+            }
+        };
     }
 }

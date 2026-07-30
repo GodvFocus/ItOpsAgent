@@ -2,15 +2,19 @@ package com.yuyu.fishagent.chat.answer;
 
 import com.yuyu.fishagent.chat.dto.SourceRef;
 import com.yuyu.fishagent.chat.dto.StructuredAnswer;
+import com.yuyu.fishagent.common.evidence.EvidenceRegistry;
 import com.yuyu.fishagent.common.resilience.CircuitBreakerHelper;
 import com.yuyu.fishagent.common.resilience.ResilienceConstants;
 import com.yuyu.fishagent.common.trace.PromptTraceSupport;
+import com.yuyu.fishagent.common.trace.TraceContext;
 import com.yuyu.fishagent.rag.pipeline.recall.RagRecall;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -29,26 +33,41 @@ public class EvidenceAssembler {
     private final StructuredAnswerRenderer renderer;
     private final PromptTraceSupport promptTraceSupport;
     private final CircuitBreakerHelper circuitBreakerHelper;
+    private final EvidenceRegistry evidenceRegistry;
 
+    @Autowired
     public EvidenceAssembler(@Qualifier("memoryChatModel") ChatModel chatModel,
                              StructuredAnswerPromptBuilder promptBuilder,
                              StructuredAnswerParser parser,
                              StructuredAnswerRenderer renderer,
                              PromptTraceSupport promptTraceSupport,
-                             CircuitBreakerHelper circuitBreakerHelper) {
+                             CircuitBreakerHelper circuitBreakerHelper,
+                             EvidenceRegistry evidenceRegistry) {
         this.chatModel = chatModel;
         this.promptBuilder = promptBuilder;
         this.parser = parser;
         this.renderer = renderer;
         this.promptTraceSupport = promptTraceSupport;
         this.circuitBreakerHelper = circuitBreakerHelper;
+        this.evidenceRegistry = evidenceRegistry;
+    }
+
+    /** 兼容旧测试构造器；生产装配使用 Spring 注入的 Registry。 */
+    public EvidenceAssembler(ChatModel chatModel,
+                             StructuredAnswerPromptBuilder promptBuilder,
+                             StructuredAnswerParser parser,
+                             StructuredAnswerRenderer renderer,
+                             PromptTraceSupport promptTraceSupport,
+                             CircuitBreakerHelper circuitBreakerHelper) {
+        this(chatModel, promptBuilder, parser, renderer, promptTraceSupport,
+                circuitBreakerHelper, new EvidenceRegistry(new ObjectMapper()));
     }
 
     public StructuredAnswer assemble(String userInput, String finalAnswer, List<RagRecall.RecallHit> hits) {
         if (finalAnswer == null || finalAnswer.isBlank()) {
             return null;
         }
-        List<SourceRef> evidences = SourceRef.from(hits);
+        List<SourceRef> evidences = collectEvidences(hits);
         StructuredAnswer answer = tryModelStructuredAnswer(userInput, finalAnswer, evidences);
         if (answer == null) {
             answer = fallback(finalAnswer, evidences);
@@ -62,6 +81,18 @@ public class EvidenceAssembler {
                 answer.evidences(),
                 renderer.render(answer)
         );
+    }
+
+    private List<SourceRef> collectEvidences(List<RagRecall.RecallHit> hits) {
+        String turnId = TraceContext.currentTurnId();
+        if (turnId == null || turnId.isBlank()) {
+            return SourceRef.from(hits);
+        }
+        evidenceRegistry.registerRagHits(turnId, hits);
+        return evidenceRegistry.snapshot(turnId).stream()
+                .map(SourceRef::from)
+                .filter(ref -> ref != null)
+                .toList();
     }
 
     private StructuredAnswer tryModelStructuredAnswer(String userInput, String finalAnswer, List<SourceRef> evidences) {

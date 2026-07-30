@@ -6,6 +6,7 @@ import com.alibaba.cloud.ai.graph.RunnableConfig;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.yuyu.fishagent.agent.tool.ToolRegistry;
 import com.yuyu.fishagent.agent.config.AgentProperties;
+import com.yuyu.fishagent.chat.router.QueryRoute;
 import com.yuyu.fishagent.common.resilience.ResilienceConstants;
 import com.yuyu.fishagent.common.trace.TraceCollector;
 import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
@@ -76,6 +77,16 @@ public class ChatAgent extends BaseAgent {
     }
 
     public Flux<NodeOutput> stream(List<Message> messages, String threadId, String turnId) {
+        return stream(messages, threadId, turnId, null);
+    }
+
+    /**
+     * 按路由创建本轮 Agent，工具权限在回调生成阶段和调用阶段双重校验。
+     */
+    public Flux<NodeOutput> stream(List<Message> messages,
+                                   String threadId,
+                                   String turnId,
+                                   QueryRoute route) {
         try {
             transitionTo(AgentStatus.RUNNING);
             RunnableConfig config = RunnableConfig.builder()
@@ -84,7 +95,9 @@ public class ChatAgent extends BaseAgent {
             AtomicLong previousNodeAt = new AtomicLong(System.nanoTime());
             ReactAgent agent = (turnId == null || turnId.isBlank())
                     ? reactAgent
-                    : buildReactAgent(toolRegistry.allCallbacks(turnId), "");
+                    : buildReactAgent(route == null
+                            ? toolRegistry.allCallbacks(turnId)
+                            : toolRegistry.allCallbacks(route, turnId), "");
             return agent.stream(messages, config)
                     // 保护完整 Flux 生命周期：上游流式错误、慢调用和熔断打开都能被记录。
                     .transformDeferred(CircuitBreakerOperator.of(llmCircuitBreaker))

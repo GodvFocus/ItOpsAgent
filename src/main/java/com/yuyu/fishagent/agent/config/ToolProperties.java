@@ -5,6 +5,8 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -29,6 +31,18 @@ public class ToolProperties {
             "web_fetch", 6000,
             "file_read", 8000,
             "web_search", 3000
+    ));
+
+    /**
+     * 路由工具白名单。空列表表示该路由不允许调用工具，未配置的路由默认保留兼容行为。
+     */
+    private Map<String, List<String>> routeAllowlist = new LinkedHashMap<>(Map.of(
+            "FAST_RAG", List.of(),
+            "TROUBLESHOOTING_AGENT", List.of(
+                    "knowledge_search_tool",
+                    "log_search_tool",
+                    "service_status_tool",
+                    "search_large_result")
     ));
 
     private Tavily tavily = new Tavily();
@@ -60,5 +74,16 @@ public class ToolProperties {
             return maxResultChars;
         }
         return overrides.getOrDefault(toolName, maxResultChars);
+    }
+
+    public boolean isToolAllowed(String route, String toolName) {
+        if (route == null || route.isBlank()) {
+            return true;
+        }
+        List<String> allowed = routeAllowlist.get(route.trim().toUpperCase());
+        if (allowed == null) {
+            return true;
+        }
+        return allowed.contains("*") || allowed.contains(toolName);
     }
 }

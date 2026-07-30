@@ -3,8 +3,11 @@ package com.yuyu.fishagent.agent.tool;
 import com.yuyu.fishagent.agent.config.ToolProperties;
 import com.yuyu.fishagent.agent.tool.troubleshooting.TroubleshootingSecurityGuard;
 import com.yuyu.fishagent.agent.tool.result.ToolResultGovernor;
+import com.yuyu.fishagent.chat.router.QueryRoute;
+import com.yuyu.fishagent.common.evidence.EvidenceRegistry;
 import com.yuyu.fishagent.common.trace.TraceContext;
 import com.yuyu.fishagent.common.util.TextTruncator;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.tool.ToolCallback;
@@ -33,6 +36,7 @@ public class ToolRegistry {
     private final ToolProperties toolProperties;
     private final ToolResultGovernor toolResultGovernor;
     private final TroubleshootingSecurityGuard troubleshootingSecurityGuard;
+    private final EvidenceRegistry evidenceRegistry;
 
     private final List<ToolCallback> callbacks = new ArrayList<>();
     private final List<RegisteredTool> registeredTools = new ArrayList<>();
@@ -41,32 +45,35 @@ public class ToolRegistry {
     public ToolRegistry(List<AgentToolProvider> providers,
                         ToolProperties toolProperties,
                         ToolResultGovernor toolResultGovernor,
-                        TroubleshootingSecurityGuard troubleshootingSecurityGuard) {
+                        TroubleshootingSecurityGuard troubleshootingSecurityGuard,
+                        EvidenceRegistry evidenceRegistry) {
         this.providers = providers == null ? List.of() : providers;
         this.toolProperties = toolProperties;
         this.toolResultGovernor = toolResultGovernor;
         this.troubleshootingSecurityGuard = troubleshootingSecurityGuard == null
                 ? new TroubleshootingSecurityGuard()
                 : troubleshootingSecurityGuard;
+        this.evidenceRegistry = evidenceRegistry == null ? new EvidenceRegistry(new ObjectMapper()) : evidenceRegistry;
     }
 
     /**
      * 测试兼容构造器：未提供 v6.2 governor 时保留旧字符上限治理。
      */
     public ToolRegistry(List<AgentToolProvider> providers, ToolProperties toolProperties) {
-        this.providers = providers == null ? List.of() : providers;
-        this.toolProperties = toolProperties;
-        this.toolResultGovernor = null;
-        this.troubleshootingSecurityGuard = new TroubleshootingSecurityGuard();
+        this(providers, toolProperties, null, new TroubleshootingSecurityGuard(), null);
     }
 
     public ToolRegistry(List<AgentToolProvider> providers,
                         ToolProperties toolProperties,
                         ToolResultGovernor toolResultGovernor) {
-        this.providers = providers == null ? List.of() : providers;
-        this.toolProperties = toolProperties;
-        this.toolResultGovernor = toolResultGovernor;
-        this.troubleshootingSecurityGuard = new TroubleshootingSecurityGuard();
+        this(providers, toolProperties, toolResultGovernor, new TroubleshootingSecurityGuard(), null);
+    }
+
+    public ToolRegistry(List<AgentToolProvider> providers,
+                        ToolProperties toolProperties,
+                        ToolResultGovernor toolResultGovernor,
+                        TroubleshootingSecurityGuard troubleshootingSecurityGuard) {
+        this(providers, toolProperties, toolResultGovernor, troubleshootingSecurityGuard, null);
     }
 
     @PostConstruct
@@ -112,6 +119,22 @@ public class ToolRegistry {
                 .toList();
     }
 
+    /** 返回指定路由允许的工具，过滤发生在工具暴露前。 */
+    public List<ToolCallback> allCallbacks(QueryRoute route, String turnId) {
+        return registeredTools.stream()
+                .filter(tool -> isAllowed(route, tool.name()))
+                .map(tool -> wrap(tool.name(), tool.callback(), turnId, route))
+                .toList();
+    }
+
+    public List<ToolCallback> allCallbacks(QueryRoute route) {
+        return allCallbacks(route, null);
+    }
+
+    public boolean isAllowed(QueryRoute route, String toolName) {
+        return route == null || toolProperties.isToolAllowed(route.name(), toolName);
+    }
+
     public int size() {
         return callbacks.size();
     }
@@ -154,9 +177,16 @@ public class ToolRegistry {
     }
 
     private ToolCallback wrap(String toolName, ToolCallback original, String turnId) {
+        return wrap(toolName, original, turnId, null);
+    }
+
+    private ToolCallback wrap(String toolName, ToolCallback original, String turnId, QueryRoute route) {
         return new ToolCallback() {
             @Override
             public String call(String toolInput) {
+                if (route != null && !isAllowed(route, toolName)) {
+                    throw new IllegalStateException("tool " + toolName + " is not allowed for route " + route.name());
+                }
                 String summary = toolInput != null && toolInput.length() > 200
                         ? toolInput.substring(0, 200) + "..."
                         : toolInput;
@@ -171,6 +201,9 @@ public class ToolRegistry {
                 }
                 try {
                     String result = original.call(toolInput);
+                    String effectiveTurnId = turnId == null || turnId.isBlank()
+                            ? TraceContext.currentTurnId() : turnId;
+                    result = evidenceRegistry.registerToolResult(effectiveTurnId, toolName, result);
                     result = toolResultGovernor == null
                             ? governResult(toolName, result)
                             : toolResultGovernor.govern(turnId, toolName, toolInput, result).content();

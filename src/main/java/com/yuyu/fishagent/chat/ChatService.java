@@ -26,6 +26,7 @@ import com.yuyu.fishagent.common.trace.TraceFileWriter;
 import com.yuyu.fishagent.common.trace.PromptTraceSupport;
 import com.yuyu.fishagent.common.trace.PromptTraceSupport.PromptTraceMetadata;
 import com.yuyu.fishagent.common.trace.TurnTrace;
+import com.yuyu.fishagent.common.evidence.EvidenceRegistry;
 import com.yuyu.fishagent.common.metrics.ChatMetrics;
 import com.yuyu.fishagent.common.metrics.ChatTurnLifecycle;
 import com.yuyu.fishagent.chat.history.ChatMemoryStore;
@@ -67,6 +68,7 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import reactor.core.Disposable;
@@ -154,7 +156,9 @@ public class ChatService {
     private final EvidenceAssembler evidenceAssembler;
     private final CircuitBreaker llmCircuitBreaker;
     private final PromptTraceSupport promptTraceSupport;
+    private final EvidenceRegistry evidenceRegistry;
 
+    @Autowired
     public ChatService(ChatAgent chatAgent,
                        @Qualifier("memoryChatModel") ChatModel fastRagChatModel,
                        QueryRouter queryRouter,
@@ -178,7 +182,8 @@ public class ChatService {
                        ToolResultGovernor toolResultGovernor,
                        EvidenceAssembler evidenceAssembler,
                        CircuitBreakerRegistry circuitBreakerRegistry,
-                       PromptTraceSupport promptTraceSupport) {
+                       PromptTraceSupport promptTraceSupport,
+                       EvidenceRegistry evidenceRegistry) {
         this.chatAgent = chatAgent;
         this.fastRagChatModel = fastRagChatModel;
         this.queryRouter = queryRouter;
@@ -203,6 +208,41 @@ public class ChatService {
         this.evidenceAssembler = evidenceAssembler;
         this.llmCircuitBreaker = circuitBreakerRegistry.circuitBreaker(ResilienceConstants.CB_LLM);
         this.promptTraceSupport = promptTraceSupport;
+        this.evidenceRegistry = evidenceRegistry;
+    }
+
+    /** 测试和旧调用方兼容的构造器；生产装配使用 Spring 注入的 Registry。 */
+    public ChatService(ChatAgent chatAgent,
+                       ChatModel fastRagChatModel,
+                       QueryRouter queryRouter,
+                       ChatMemoryStore memoryStore,
+                       ShortTermMemoryService shortTermMemoryService,
+                       MemoryCompressionService memoryCompressionService,
+                       LongTermMemoryIngestionService longTermRagContextService,
+                       RagRecall.Augmentation ragContextService,
+                       AgentProperties properties,
+                       MemoryProperties memoryProperties,
+                       RateLimitService rateLimitService,
+                       ChatMetadataService chatMetadataService,
+                       AgentStateStore agentStateStore,
+                       AgentStateUpdater agentStateUpdater,
+                       ChatMetrics chatMetrics,
+                       ObjectMapper objectMapper,
+                       FishLlmProperties fishLlmProperties,
+                       ActiveChatModelContext activeChatModelContext,
+                       TraceCollector traceCollector,
+                       TraceFileWriter traceFileWriter,
+                       ToolResultGovernor toolResultGovernor,
+                       EvidenceAssembler evidenceAssembler,
+                       CircuitBreakerRegistry circuitBreakerRegistry,
+                       PromptTraceSupport promptTraceSupport) {
+        this(chatAgent, fastRagChatModel, queryRouter, memoryStore, shortTermMemoryService,
+                memoryCompressionService, longTermRagContextService, ragContextService,
+                properties, memoryProperties, rateLimitService, chatMetadataService,
+                agentStateStore, agentStateUpdater, chatMetrics, objectMapper,
+                fishLlmProperties, activeChatModelContext, traceCollector, traceFileWriter,
+                toolResultGovernor, evidenceAssembler, circuitBreakerRegistry,
+                promptTraceSupport, new EvidenceRegistry(objectMapper));
     }
 
     private String augmentRouteInstruction(String systemText, RouteDecision routeDecision) {
@@ -287,6 +327,7 @@ public class ChatService {
                 ? UUID.randomUUID().toString() : sessionId;
         final String turnId = UUID.randomUUID().toString();
         traceCollector.startTurn(turnId, sid, MDC.get(TraceConstants.TRACE_ID));
+        evidenceRegistry.startTurn(turnId);
         AtomicBoolean tracePersisted = new AtomicBoolean(false);
         Runnable persistTraceOnce = () -> {
             if (!tracePersisted.compareAndSet(false, true)) {
@@ -298,6 +339,7 @@ public class ChatService {
                 traceCollector.remove(turnId);
             }
             toolResultGovernor.clearScratch(turnId);
+            evidenceRegistry.clear(turnId);
         };
         final ChatTurnLifecycle turnLifecycle = ChatTurnLifecycle.start(chatMetrics,
                 outcome -> traceCollector.finishTurn(turnId, outcome));
@@ -443,7 +485,13 @@ public class ChatService {
                         null));
         TraceContext.setTurnId(turnId);
         try {
-            disposableRef[0] = chatAgent.stream(buildResult.messages(), sid, turnId).subscribe(
+            Flux<NodeOutput> agentStream = chatAgent.stream(
+                    buildResult.messages(), sid, turnId, routeDecision.route());
+            // 兼容直接 mock/调用旧三参数 API 的测试与扩展；Spring 生产实现始终返回四参数流。
+            if (agentStream == null) {
+                agentStream = chatAgent.stream(buildResult.messages(), sid, turnId);
+            }
+            disposableRef[0] = agentStream.subscribe(
                 node -> handleNode(node, emitter, assistantBuf),
                 err -> {
                     // Reactor 回调线程无 MDC，从入口快照恢复以使日志携带 traceId。
