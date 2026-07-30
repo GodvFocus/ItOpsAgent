@@ -325,6 +325,10 @@ fish:
 
   # ── Eval / Trace ───────────────────────────────────────────
   eval:
+    rag:
+      golden-set-path: ${FISH_EVAL_RAG_GOLDEN_SET_PATH:classpath:eval/golden-rag.json}
+      k: ${FISH_EVAL_RAG_K:5}
+      per-leg-k: ${FISH_EVAL_RAG_PER_LEG_K:10}
     summary:
       live-enabled: ${FISH_EVAL_SUMMARY_LIVE_ENABLED:false}
   trace:

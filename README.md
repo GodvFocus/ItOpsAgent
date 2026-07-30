@@ -176,6 +176,18 @@ sequenceDiagram
 
 4 个独立 CircuitBreaker 实例覆盖所有外部服务调用：**llm**（LLM 流式调用）、**milvus-text**（Milvus BM25 文本召回）、**milvus-vector**（Milvus 向量 ANN 召回）、**rerank**（重排序服务）。状态机 CLOSED → OPEN → HALF-OPEN 自动切换：OPEN 时 LLM 降级为预设回复模板，Milvus 双路召回降级为可用单路，rerank 降级为原始 score 排序。
 
+### RAG 真实检索评测入口
+
+后端提供 `GET` / `POST /api/eval/rag`，使用当前登录用户和 workspace 上下文，调用真实的 Milvus 文本/向量检索器与 Reranker，返回 `dense-only`、`lexical-only`、`hybrid`、`hybrid+rerank` 四种结果的 Recall@K、MRR、nDCG、平均延迟和调用成本字段。
+
+```bash
+# 需要先登录并在请求上下文中设置 workspace
+curl -H "X-Auth-Token: <token>" \
+  "http://localhost:8080/api/eval/rag?k=5&perLegK=10"
+```
+
+默认评测集为 `src/main/resources/eval/golden-rag.json`。可通过 `FISH_EVAL_RAG_GOLDEN_SET_PATH` 指向新的 `classpath:` 或文件路径；评测集中的相关文档 ID 必须与 Milvus 实际返回的命中 ID 一致，否则指标会按未命中计算。
+
 ### MDC TraceId 全链路传播
 
 `TraceFilter`（`@Order(HIGHEST_PRECEDENCE)`）在请求入口生成/透传 `traceId` 写入 MDC，覆盖四类异步场景：CompletableFuture 通过 `MdcAsync` 工具类自动传播；Reactor `subscribe` 回调手动 `MDC.setContextMap(snapshot)` 恢复；SSE `emitter` 的 `onTimeout` / `onCompletion` / `onError` 三回调同样在回调体内恢复 MDC，保证非 Servlet 线程的日志也能关联到原始请求；`TraceFilter#finally` 统一清理。logback 配置 `%X{traceId}` 输出，日志可按请求维度聚合排查。
