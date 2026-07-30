@@ -433,6 +433,15 @@ fish:
     public-index-name: ${KNOWLEDGE_PUBLIC_INDEX:fish-public-knowledge}
     user-knowledge-index-name: ${KNOWLEDGE_USER_INDEX:fish-user-knowledge}
     document-ingest-stream-key: ${FISH_DOC_INGEST_STREAM:fish:doc:ingest}
+    outbox:
+      enabled: ${KNOWLEDGE_OUTBOX_ENABLED:true}
+      dispatcher-batch-size: ${KNOWLEDGE_OUTBOX_BATCH_SIZE:20}
+      dispatcher-fixed-delay-ms: ${KNOWLEDGE_OUTBOX_DISPATCHER_DELAY_MS:5000}
+      max-attempts: ${KNOWLEDGE_OUTBOX_MAX_ATTEMPTS:8}
+      retry-base-seconds: ${KNOWLEDGE_OUTBOX_RETRY_BASE_SECONDS:5}
+      retry-max-seconds: ${KNOWLEDGE_OUTBOX_RETRY_MAX_SECONDS:300}
+      dispatching-timeout-seconds: ${KNOWLEDGE_OUTBOX_DISPATCHING_TIMEOUT_SECONDS:60}
+      dlq-list-limit: ${KNOWLEDGE_OUTBOX_DLQ_LIST_LIMIT:100}
     compensation:
       enabled: ${KNOWLEDGE_COMPENSATION_ENABLED:true}
       timeout-minutes: ${KNOWLEDGE_COMPENSATION_TIMEOUT_MINUTES:10}

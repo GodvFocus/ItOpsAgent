@@ -27,6 +27,29 @@ public class KnowledgeProperties {
         private int timeoutMinutes = 10;
     }
 
+    /**
+     * 文档摄入 Transactional Outbox 参数。
+     */
+    @Data
+    public static class OutboxProperties {
+        /** 总开关：关闭后 dispatcher 不注册。 */
+        private boolean enabled = true;
+        /** 单轮最多拉取多少条待投递事件。 */
+        private int dispatcherBatchSize = 20;
+        /** 后台 dispatcher 的固定轮询间隔（毫秒）。 */
+        private long dispatcherFixedDelayMs = 5_000L;
+        /** 最大投递次数，达到后进入 DLQ。 */
+        private int maxAttempts = 8;
+        /** 指数退避起始秒数。 */
+        private int retryBaseSeconds = 5;
+        /** 指数退避上限秒数。 */
+        private int retryMaxSeconds = 300;
+        /** DISPATCHING 超过该秒数仍未完成，允许其他轮次重新认领。 */
+        private int dispatchingTimeoutSeconds = 60;
+        /** DLQ 列表接口最大返回条数。 */
+        private int dlqListLimit = 100;
+    }
+
     /** Milvus 公有知识库 Collection 名。 */
     private String publicIndexName = "itops_public_knowledge";
 
@@ -43,4 +66,7 @@ public class KnowledgeProperties {
 
     /** 孤儿任务补偿参数。 */
     private CompensationProperties compensation = new CompensationProperties();
+
+    /** 可靠事件投递参数。 */
+    private OutboxProperties outbox = new OutboxProperties();
 }

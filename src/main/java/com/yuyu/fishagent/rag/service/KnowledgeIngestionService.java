@@ -1,33 +1,24 @@
 package com.yuyu.fishagent.rag.service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
-import com.yuyu.fishagent.common.trace.TraceConstants;
 import com.yuyu.fishagent.rag.config.KnowledgeProperties;
 import com.yuyu.fishagent.rag.dto.MultipartPartInfo;
 import com.yuyu.fishagent.rag.entity.DocumentMetadata;
 import com.yuyu.fishagent.rag.mapper.DocumentMetadataMapper;
-import com.yuyu.fishagent.rag.service.RustFsService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.slf4j.MDC;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.data.redis.connection.stream.MapRecord;
-import org.springframework.data.redis.connection.stream.RecordId;
-import org.springframework.data.redis.connection.stream.StreamRecords;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.io.InputStream;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 
 /**
- * 知识库上传：写入 RustFS、落库 {@code document_metadata}、投递 Redis Stream；解析与向量化由 Python Worker 完成。
+ * 知识库上传：写入 RustFS、落库 {@code document_metadata} 与事务 outbox；Redis Stream 投递由独立 dispatcher 完成。
  */
 @Slf4j
 @Service
@@ -36,9 +27,7 @@ public class KnowledgeIngestionService {
 
     private final ObjectProvider<RustFsService> rustFsProvider;
     private final DocumentMetadataMapper documentMetadataMapper;
-    private final ObjectProvider<StringRedisTemplate> stringRedisTemplateProvider;
-    private final KnowledgeProperties knowledgeProperties;
-    private String scopeType;
+    private final DocumentIngestOutboxService documentIngestOutboxService;
 
     /**
      * 用户上传私有文档：scope PRIVATE，对象键前缀 {@code user/{userId}/}。
@@ -92,16 +81,18 @@ public class KnowledgeIngestionService {
         row.setFileSize(size);
         row.setMinioPath(minioPath);
         row.setVisibility(visibility);
-        this.scopeType = visibility;
         row.setStatus(DocumentMetadata.STATUS_PENDING);
         row.setErrorMsg(null);
         row.setCreatedAt(now);
         row.setUpdatedAt(now);
 
         try {
-            documentMetadataMapper.insert(row);
+            documentIngestOutboxService.createPendingTaskWithOutbox(
+                    row,
+                    documentIngestOutboxService.currentTraceId(taskId)
+            );
         } catch (Exception e) {
-            log.warn("[KnowledgeIngestion] MySQL 插入失败，回滚删除对象 path={}: {}", minioPath, e.getMessage());
+            log.warn("[KnowledgeIngestion] 任务/Outbox 落库失败，回滚删除对象 path={}: {}", minioPath, e.getMessage());
             try {
                 rustFs.deleteDocObject(minioPath);
             } catch (Exception ex) {
@@ -110,24 +101,8 @@ public class KnowledgeIngestionService {
             throw e;
         }
 
-        try {
-            publishStream(taskId, minioPath, row.getWorkspaceId(), visibility, userId, row.getFileName(), size);
-        } catch (Exception e) {
-            log.error("[KnowledgeIngestion] Redis Stream 投递失败 taskId={}: {}", taskId, e.getMessage());
-            documentMetadataMapper.update(null, Wrappers.<DocumentMetadata>lambdaUpdate()
-                    .eq(DocumentMetadata::getId, row.getId())
-                    .set(DocumentMetadata::getStatus, DocumentMetadata.STATUS_FAILED)
-                    .set(DocumentMetadata::getErrorMsg, truncate("Redis Stream 投递失败: " + e.getMessage(), 2000))
-                    .set(DocumentMetadata::getUpdatedAt, LocalDateTime.now()));
-            try {
-                rustFs.deleteDocObject(minioPath);
-            } catch (Exception ex) {
-                log.warn("[KnowledgeIngestion] Stream 失败后删除对象失败 path={}: {}", minioPath, ex.getMessage());
-            }
-            throw new IllegalArgumentException("文档已记录但队列投递失败，请稍后重试或联系管理员", e);
-        }
-
-        log.info("[KnowledgeIngestion] 已提交任务 taskId={}, path={}, scope={}", taskId, minioPath, scopeType);
+        log.info("[KnowledgeIngestion] 已提交任务并写入 Outbox taskId={}, path={}, scope={}",
+                taskId, minioPath, visibility);
         return taskId;
     }
 
@@ -165,13 +140,12 @@ public class KnowledgeIngestionService {
         row.setFileSize(fileSize);
         row.setMinioPath(minioPath);
         row.setVisibility(visibility);
-        this.scopeType = visibility;
         row.setStatus(DocumentMetadata.STATUS_PENDING);
         row.setErrorMsg(null);
         row.setCreatedAt(now);
         row.setUpdatedAt(now);
 
-        documentMetadataMapper.insert(row);
+        documentIngestOutboxService.createPendingTask(row);
 
         log.info("[KnowledgeIngestion] multipart 已初始化 taskId={}, path={}", taskId, minioPath);
         return new MultipartInitResult(taskId, taskId, minioPath);
@@ -205,63 +179,52 @@ public class KnowledgeIngestionService {
                                         List<MultipartPartInfo> parts) throws Exception {
         assertRowMatches(row, minioPath);
         requireUploadIdMatchesTask(uploadId, row.getTaskId());
-        if (parts == null || parts.isEmpty()) {
-            throw new IllegalArgumentException("parts 不能为空");
-        }
         RustFsService rustFs = rustFsProvider.getIfAvailable();
         if (rustFs == null) {
             throw new IllegalArgumentException("RustFS 不可用");
         }
-
-        List<MultipartPartInfo> sorted = new ArrayList<>(parts);
-        sorted.sort(Comparator.comparingInt(MultipartPartInfo::getPartNumber));
-        List<String> sourceKeys = new ArrayList<>(sorted.size());
-        for (MultipartPartInfo p : sorted) {
-            sourceKeys.add(stagingPartKey(row.getTaskId(), p.getPartNumber()));
+        if (documentIngestOutboxService.hasOutbox(row.getTaskId())) {
+            log.info("[KnowledgeIngestion] multipart complete 幂等跳过，outbox 已存在 taskId={}", row.getTaskId());
+            return;
         }
 
-        try {
-            rustFs.composeDocObject(sourceKeys, minioPath);
-        } catch (Exception e) {
-            log.error("[KnowledgeIngestion] compose 合并失败 taskId={}: {}", row.getTaskId(), e.getMessage());
-            documentMetadataMapper.update(null, Wrappers.<DocumentMetadata>lambdaUpdate()
-                    .eq(DocumentMetadata::getId, row.getId())
-                    .set(DocumentMetadata::getStatus, DocumentMetadata.STATUS_FAILED)
-                    .set(DocumentMetadata::getErrorMsg, truncate("合并分片失败: " + e.getMessage(), 2000))
-                    .set(DocumentMetadata::getUpdatedAt, LocalDateTime.now()));
+        boolean finalObjectExists = rustFs.docObjectExists(minioPath);
+        if (!finalObjectExists) {
+            if (parts == null || parts.isEmpty()) {
+                throw new IllegalArgumentException("parts 不能为空");
+            }
+
+            try {
+                List<MultipartPartInfo> sorted = new ArrayList<>(parts);
+                sorted.sort(Comparator.comparingInt(MultipartPartInfo::getPartNumber));
+                List<String> sourceKeys = new ArrayList<>(sorted.size());
+                for (MultipartPartInfo p : sorted) {
+                    sourceKeys.add(stagingPartKey(row.getTaskId(), p.getPartNumber()));
+                }
+                rustFs.composeDocObject(sourceKeys, minioPath);
+            } catch (Exception e) {
+                log.error("[KnowledgeIngestion] compose 合并失败 taskId={}: {}", row.getTaskId(), e.getMessage());
+                throw new IllegalArgumentException("合并分片失败，请重新上传或联系管理员", e);
+            }
             try {
                 rustFs.deleteObjectsByPrefix(stagingPrefix(row.getTaskId()));
-            } catch (Exception ex) {
-                log.warn("[KnowledgeIngestion] compose 失败后清理 staging: {}", ex.getMessage());
+            } catch (Exception e) {
+                log.warn("[KnowledgeIngestion] compose 成功后清理 staging 失败 taskId={}: {}", row.getTaskId(), e.getMessage());
             }
-            throw e;
+        } else {
+            log.info("[KnowledgeIngestion] 检测到最终对象已存在，跳过重复 compose taskId={}", row.getTaskId());
         }
 
-        try {
-            rustFs.deleteObjectsByPrefix(stagingPrefix(row.getTaskId()));
-        } catch (Exception e) {
-            log.warn("[KnowledgeIngestion] compose 成功后清理 staging 失败 taskId={}: {}", row.getTaskId(), e.getMessage());
+        boolean enqueued = documentIngestOutboxService.enqueueExistingTask(
+                row,
+                documentIngestOutboxService.currentTraceId(row.getTaskId())
+        );
+        if (!enqueued) {
+            log.info("[KnowledgeIngestion] multipart complete 幂等跳过，outbox 已存在 taskId={}", row.getTaskId());
+            return;
         }
 
-        try {
-            publishStream(row.getTaskId(), minioPath, row.getWorkspaceId(), row.getVisibility(),
-                    row.getUserId(), row.getFileName(), row.getFileSize());
-        } catch (Exception e) {
-            log.error("[KnowledgeIngestion] multipart 完成后 Stream 投递失败 taskId={}: {}", row.getTaskId(), e.getMessage());
-            documentMetadataMapper.update(null, Wrappers.<DocumentMetadata>lambdaUpdate()
-                    .eq(DocumentMetadata::getId, row.getId())
-                    .set(DocumentMetadata::getStatus, DocumentMetadata.STATUS_FAILED)
-                    .set(DocumentMetadata::getErrorMsg, truncate("Redis Stream 投递失败: " + e.getMessage(), 2000))
-                    .set(DocumentMetadata::getUpdatedAt, LocalDateTime.now()));
-            try {
-                rustFs.deleteDocObject(minioPath);
-            } catch (Exception ex) {
-                log.warn("[KnowledgeIngestion] Stream 失败后删除对象失败: {}", ex.getMessage());
-            }
-            throw new IllegalArgumentException("文档已合并但队列投递失败，请稍后重试或联系管理员", e);
-        }
-
-        log.info("[KnowledgeIngestion] multipart 已完成并入队 taskId={}, path={}", row.getTaskId(), minioPath);
+        log.info("[KnowledgeIngestion] multipart 已完成并写入 Outbox taskId={}, path={}", row.getTaskId(), minioPath);
     }
 
     /**
@@ -309,36 +272,6 @@ public class KnowledgeIngestionService {
         if (!minioPath.trim().equals(row.getMinioPath())) {
             throw new IllegalArgumentException("minio_path 与任务不匹配");
         }
-    }
-
-    private void publishStream(String taskId, String minioPath, String workspaceId, String visibility,
-                               Long userId, String fileName, long fileSize) {
-        StringRedisTemplate redis = stringRedisTemplateProvider.getIfAvailable();
-        if (redis == null) {
-            throw new IllegalArgumentException("StringRedisTemplate 不可用（请检查 Redis 配置）");
-        }
-        String streamKey = knowledgeProperties.getDocumentIngestStreamKey();
-        Map<String, String> body = new LinkedHashMap<>();
-        body.put("task_id", taskId);
-        body.put("minio_path", minioPath);
-        body.put("workspace_id", normalizeWorkspaceId(workspaceId));
-        body.put("visibility", visibility);
-        body.put("user_id", String.valueOf(userId));
-        body.put("file_name", fileName == null ? "" : fileName);
-        body.put("file_size", String.valueOf(fileSize));
-        body.put("trace_id", currentTraceId(taskId));
-
-        MapRecord<String, String, String> record = StreamRecords.mapBacked(body).withStreamKey(streamKey);
-        RecordId recordId = redis.opsForStream().add(record);
-        log.debug("[KnowledgeIngestion] XADD {} -> {}", streamKey, recordId);
-    }
-
-    private static String currentTraceId(String taskId) {
-        String traceId = MDC.get(TraceConstants.TRACE_ID);
-        if (traceId == null || traceId.isBlank()) {
-            return taskId;
-        }
-        return traceId.trim();
     }
 
     private static String sanitizeFileName(String name) {

@@ -3,7 +3,11 @@ package com.yuyu.fishagent.rag;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.yuyu.fishagent.auth.context.UserContext;
 import com.yuyu.fishagent.auth.context.UserContextHolder;
+import com.yuyu.fishagent.auth.enums.UserRole;
+import com.yuyu.fishagent.rag.dto.ChunkGroupVO;
+import com.yuyu.fishagent.rag.dto.ChunkListVO;
 import com.yuyu.fishagent.rag.dto.DocumentMetadataPageResponse;
+import com.yuyu.fishagent.rag.dto.DocumentIngestOutboxResponse;
 import com.yuyu.fishagent.rag.dto.DocumentTaskStatusResponse;
 import com.yuyu.fishagent.rag.dto.KnowledgeUploadResponse;
 import com.yuyu.fishagent.rag.dto.MultipartAbortRequest;
@@ -11,13 +15,11 @@ import com.yuyu.fishagent.rag.dto.MultipartCompleteRequest;
 import com.yuyu.fishagent.rag.dto.MultipartInitRequest;
 import com.yuyu.fishagent.rag.dto.MultipartInitResponse;
 import com.yuyu.fishagent.rag.dto.MultipartPartResponse;
-import com.yuyu.fishagent.rag.dto.ChunkGroupVO;
-import com.yuyu.fishagent.rag.dto.ChunkListVO;
 import com.yuyu.fishagent.rag.dto.RelatedCardVO;
 import com.yuyu.fishagent.rag.entity.DocumentMetadata;
-import com.yuyu.fishagent.auth.enums.UserRole;
 import com.yuyu.fishagent.rag.mapper.DocumentMetadataMapper;
 import com.yuyu.fishagent.rag.service.ChunkClusterService;
+import com.yuyu.fishagent.rag.service.DocumentIngestOutboxService;
 import com.yuyu.fishagent.rag.service.KnowledgeIngestionService;
 import com.yuyu.fishagent.rag.service.KnowledgeManageService;
 import com.yuyu.fishagent.rag.service.MultipartInitResult;
@@ -49,6 +51,7 @@ import static org.springframework.http.HttpStatus.NOT_FOUND;
 public class KnowledgeController {
 
     private final KnowledgeIngestionService knowledgeIngestionService;
+    private final DocumentIngestOutboxService documentIngestOutboxService;
     private final KnowledgeManageService knowledgeManageService;
     private final ChunkClusterService chunkClusterService;
     private final DocumentMetadataMapper documentMetadataMapper;
@@ -238,6 +241,25 @@ public class KnowledgeController {
             throw new ResponseStatusException(FORBIDDEN, "无权查看该任务");
         }
         return new DocumentTaskStatusResponse(row.getStatus(), row.getErrorMsg());
+    }
+
+    /**
+     * 管理员查看进入 DLQ 的事件。
+     */
+    @GetMapping("/api/admin/knowledge/outbox/dlq")
+    public List<DocumentIngestOutboxResponse> deadLetters(
+            @RequestParam(defaultValue = "50") int limit) {
+        requireAdmin();
+        return documentIngestOutboxService.listDeadLetters(limit);
+    }
+
+    /**
+     * 管理员人工重放指定任务。
+     */
+    @PostMapping("/api/admin/knowledge/tasks/{taskId}/replay")
+    public void replayTask(@PathVariable String taskId) {
+        requireAdmin();
+        documentIngestOutboxService.requestReplay(taskId);
     }
 
     /**

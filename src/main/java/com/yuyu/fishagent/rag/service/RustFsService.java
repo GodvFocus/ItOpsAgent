@@ -12,6 +12,7 @@ import io.minio.ObjectWriteResponse;
 import io.minio.PutObjectArgs;
 import io.minio.RemoveObjectArgs;
 import io.minio.Result;
+import io.minio.StatObjectArgs;
 import io.minio.errors.ErrorResponseException;
 import io.minio.messages.Item;
 import jakarta.annotation.PostConstruct;
@@ -139,6 +140,26 @@ public class RustFsService {
         } catch (ErrorResponseException e) {
             if ("NoSuchKey".equalsIgnoreCase(e.errorResponse().code())) {
                 return null;
+            }
+            throw e;
+        }
+    }
+
+    /**
+     * 判断 itops-docs 中对象是否已存在，避免分片 complete 重试时重复 compose。
+     */
+    public boolean docObjectExists(String objectKey) throws Exception {
+        ensureClient();
+        try {
+            client.statObject(StatObjectArgs.builder()
+                    .bucket(props.getBucketDocs())
+                    .object(objectKey)
+                    .build());
+            return true;
+        } catch (ErrorResponseException e) {
+            if ("NoSuchKey".equalsIgnoreCase(e.errorResponse().code())
+                    || "NoSuchObject".equalsIgnoreCase(e.errorResponse().code())) {
+                return false;
             }
             throw e;
         }
