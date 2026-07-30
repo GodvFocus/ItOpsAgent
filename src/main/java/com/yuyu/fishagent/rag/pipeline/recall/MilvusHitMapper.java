@@ -25,29 +25,24 @@ public final class MilvusHitMapper {
         if (results == null) return out;
 
         List<SearchResultsWrapper.IDScore> scores = results.getIDScore(0);
-        if (scores == null) return out;
+        List<QueryResultsWrapper.RowRecord> rows = results.getRowRecords();
+        if (scores == null || rows == null) return out;
 
-        for (int i = 0; i < scores.size(); i++) {
+        int count = Math.min(scores.size(), rows.size());
+        for (int i = 0; i < count; i++) {
             SearchResultsWrapper.IDScore idScore = scores.get(i);
+            QueryResultsWrapper.RowRecord row = rows.get(i);
             try {
-                String id = String.valueOf(idScore.getStrID());
-                List<?> contentList = results.getFieldData("content", i);
-                String content = contentList != null && !contentList.isEmpty()
-                        ? String.valueOf(contentList.get(0)) : null;
+                String id = row.get("id") == null ? String.valueOf(idScore.getStrID()) : String.valueOf(row.get("id"));
+                String content = row.get("content") == null ? null : String.valueOf(row.get("content"));
                 if (content == null || content.isBlank()) continue;
 
-                List<?> docIdList = results.getFieldData("doc_id", i);
-                String docId = docIdList != null && !docIdList.isEmpty()
-                        ? String.valueOf(docIdList.get(0)) : null;
-                List<?> chunkIdxList = results.getFieldData("chunk_index", i);
-                Integer chunkIndex = chunkIdxList != null && !chunkIdxList.isEmpty()
-                        ? ((Long) chunkIdxList.get(0)).intValue() : null;
-                List<?> docNameList = results.getFieldData("doc_name", i);
-                String docName = docNameList != null && !docNameList.isEmpty()
-                        ? String.valueOf(docNameList.get(0)) : null;
-                List<?> authList = results.getFieldData("authority", i);
-                Double authority = authList != null && !authList.isEmpty()
-                        ? (Double) authList.get(0) : null;
+                String docId = row.get("doc_id") == null ? null : String.valueOf(row.get("doc_id"));
+                Object chunkValue = row.get("chunk_index");
+                Integer chunkIndex = chunkValue instanceof Number number ? number.intValue() : null;
+                String docName = row.get("doc_name") == null ? null : String.valueOf(row.get("doc_name"));
+                Object authorityValue = row.get("authority");
+                Double authority = authorityValue instanceof Number number ? number.doubleValue() : null;
 
                 out.add(new RagRecall.RecallHit(
                         id, content.trim(), (double) idScore.getScore(), source,

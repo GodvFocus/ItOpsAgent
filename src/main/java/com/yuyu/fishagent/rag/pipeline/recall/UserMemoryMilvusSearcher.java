@@ -173,22 +173,22 @@ public class UserMemoryMilvusSearcher implements RagRecall.DocumentSearcher {
             return out;
         }
         List<SearchResultsWrapper.IDScore> scores = results.getIDScore(0);
-        if (scores == null) {
+        List<io.milvus.response.QueryResultsWrapper.RowRecord> rows = results.getRowRecords();
+        if (scores == null || rows == null) {
             return out;
         }
-        for (int i = 0; i < scores.size(); i++) {
+        int count = Math.min(scores.size(), rows.size());
+        for (int i = 0; i < count; i++) {
             try {
-                String id = String.valueOf(scores.get(i).getStrID());
-                List<?> contentList = results.getFieldData("content", i);
-                String content = contentList != null && !contentList.isEmpty()
-                        ? String.valueOf(contentList.get(0)) : null;
+                var row = rows.get(i);
+                String id = row.get("id") == null
+                        ? String.valueOf(scores.get(i).getStrID()) : String.valueOf(row.get("id"));
+                String content = row.get("content") == null ? null : String.valueOf(row.get("content"));
                 if (content == null || content.isBlank()) {
                     continue;
                 }
-                List<?> createdAtList = results.getFieldData("created_at", i);
-                Long createdAt = createdAtList != null && !createdAtList.isEmpty()
-                        && createdAtList.get(0) instanceof Number
-                        ? ((Number) createdAtList.get(0)).longValue() : null;
+                Object createdAtValue = row.get("created_at");
+                Long createdAt = createdAtValue instanceof Number number ? number.longValue() : null;
                 out.add(new RagRecall.RecallHit(id, content.trim(),
                         (double) scores.get(i).getScore(), source,
                         "记忆", 0.8, createdAt, null, null));

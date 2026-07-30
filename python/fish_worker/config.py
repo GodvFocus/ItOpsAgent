@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     redis_database: int = Field(default=1, validation_alias="REDIS_DATABASE")
 
     # ---- RustFS / MinIO（与 fish.rustfs 对齐）----
-    rustfs_endpoint: str = Field(default="http://localhost:9000", validation_alias="RUSTFS_ENDPOINT")
+    rustfs_endpoint: str = Field(default="http://localhost:1900", validation_alias="RUSTFS_ENDPOINT")
     rustfs_access_key: str = Field(default="", validation_alias="RUSTFS_ACCESS_KEY")
     rustfs_secret_key: str = Field(default="", validation_alias="RUSTFS_SECRET_KEY")
     rustfs_bucket_docs: str = Field(default="itops-docs", validation_alias="RUSTFS_BUCKET_DOCS")

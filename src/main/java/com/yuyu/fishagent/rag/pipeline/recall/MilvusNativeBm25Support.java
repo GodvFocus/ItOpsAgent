@@ -68,12 +68,16 @@ public final class MilvusNativeBm25Support {
             if (result == null) {
                 continue;
             }
-            String id = result.getPrimaryKey();
+            Map<String, Object> entity = result.getEntity() == null ? Map.of() : result.getEntity();
+            Object entityId = entity.get("id");
+            String id = entityId == null ? null : String.valueOf(entityId);
             if (id == null && result.getId() != null) {
                 id = String.valueOf(result.getId());
             }
-            hits.add(new NativeHit(id, result.getScore() == null ? 0.0 : result.getScore(),
-                    result.getEntity() == null ? Map.of() : result.getEntity()));
+            if (id == null) {
+                id = result.getPrimaryKey();
+            }
+            hits.add(new NativeHit(id, result.getScore() == null ? 0.0 : result.getScore(), entity));
         }
         return hits;
     }
