@@ -9,7 +9,8 @@ import {
   Loading,
   Collection,
   Tickets,
-  SwitchButton
+  SwitchButton,
+  DataAnalysis
 } from '@element-plus/icons-vue'
 import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
@@ -165,6 +166,12 @@ function goCards() {
   void router.push('/cards')
 }
 
+function goEval() {
+  if (streaming.value) return
+  closeDrawer()
+  void router.push('/eval')
+}
+
 async function handleLogout() {
   if (streaming.value) return
   try {
@@ -205,6 +212,10 @@ async function handleLogout() {
             <button class="action-btn" :class="{ active: route.path === '/cards' }" :disabled="streaming" @click="goCards">
               <el-icon><Tickets /></el-icon>
               知识卡片
+            </button>
+            <button class="action-btn" :class="{ active: route.path === '/eval' }" :disabled="streaming" @click="goEval">
+              <el-icon><DataAnalysis /></el-icon>
+              评测看板
             </button>
           </div>
 

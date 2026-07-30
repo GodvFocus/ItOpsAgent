@@ -38,40 +38,57 @@ public class TroubleshootingEvalRunner {
     public TroubleshootingEvalReport run(TroubleshootingGoldenSet goldenSet, int k) {
         List<TroubleshootingGoldenSet.Case> cases = goldenSet == null ? List.of() : goldenSet.cases();
         if (cases.isEmpty()) {
-            return new TroubleshootingEvalReport(0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, List.of());
+            return new TroubleshootingEvalReport(0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, List.of());
         }
         List<TroubleshootingEvalReport.CaseResult> results = new ArrayList<>();
         double routeAccuracy = 0.0;
+        double routeF1 = 0.0;
         double recallAtK = 0.0;
         double exactTokenHitRate = 0.0;
         double citationAccuracy = 0.0;
         double citationCoverage = 0.0;
         double toolSelectionAccuracy = 0.0;
+        double toolParameterAccuracy = 0.0;
         double averageToolCalls = 0.0;
         int unauthorizedRecallCount = 0;
+        int truePositive = 0;
+        int falsePositive = 0;
+        int falseNegative = 0;
 
         for (TroubleshootingGoldenSet.Case item : cases) {
             TroubleshootingEvalReport.CaseResult result = evaluateCase(item, k);
             results.add(result);
             routeAccuracy += result.routeMatched() ? 1.0 : 0.0;
+            if ("TROUBLESHOOTING_AGENT".equals(result.actualRoute())
+                    && "TROUBLESHOOTING_AGENT".equals(result.expectedRoute())) {
+                truePositive++;
+            } else if ("TROUBLESHOOTING_AGENT".equals(result.actualRoute())) {
+                falsePositive++;
+            } else if ("TROUBLESHOOTING_AGENT".equals(result.expectedRoute())) {
+                falseNegative++;
+            }
             recallAtK += result.recallAtK();
             exactTokenHitRate += result.exactTokenHitRate();
             citationAccuracy += result.citationAccuracy();
             citationCoverage += result.citationCoverage();
             toolSelectionAccuracy += result.toolSelectionAccuracy();
+            toolParameterAccuracy += result.toolParameterAccuracy();
             averageToolCalls += result.toolCalls();
             unauthorizedRecallCount += result.unauthorizedRecallCount();
         }
 
         int count = cases.size();
+        routeF1 = f1(truePositive, falsePositive, falseNegative);
         return new TroubleshootingEvalReport(
                 count,
                 routeAccuracy / count,
+                routeF1,
                 recallAtK / count,
                 exactTokenHitRate / count,
                 citationAccuracy / count,
                 citationCoverage / count,
                 toolSelectionAccuracy / count,
+                toolParameterAccuracy / count,
                 averageToolCalls / count,
                 unauthorizedRecallCount,
                 List.copyOf(results)
@@ -80,7 +97,9 @@ public class TroubleshootingEvalRunner {
 
     private TroubleshootingEvalReport.CaseResult evaluateCase(TroubleshootingGoldenSet.Case item, int k) {
         QueryRoute actualRoute = queryRouter.route(item.routeInput()).route();
-        boolean routeMatched = item.expectedRoute() == null || item.expectedRoute().equals(actualRoute.name());
+        String actualRouteName = actualRoute.name();
+        String expectedRoute = item.expectedRoute();
+        boolean routeMatched = expectedRoute == null || expectedRoute.equals(actualRouteName);
         boolean troubleshootingPath = actualRoute == QueryRoute.TROUBLESHOOTING_AGENT;
         List<String> actualTools = new ArrayList<>();
         List<String> rankedIds = new ArrayList<>();
@@ -143,16 +162,20 @@ public class TroubleshootingEvalRunner {
         double citationAccuracy = citationAccuracy(rankedIds, relevantIds, k);
         double citationCoverage = citationCoverage(rankedIds, relevantIds, k);
         double toolSelectionAccuracy = expectedToolSet(item.expectedTools()).equals(new LinkedHashSet<>(actualTools)) ? 1.0 : 0.0;
+        double toolParameterAccuracy = toolParameterAccuracy(item, actualTools);
         int unauthorizedCount = unauthorizedRecallCount(item);
         return new TroubleshootingEvalReport.CaseResult(
                 item.id(),
                 item.category(),
+                expectedRoute,
+                actualRouteName,
                 routeMatched,
                 recallAtK,
                 tokenHitRate,
                 citationAccuracy,
                 citationCoverage,
                 toolSelectionAccuracy,
+                toolParameterAccuracy,
                 actualTools.size(),
                 unauthorizedCount,
                 List.copyOf(actualTools),
@@ -245,6 +268,35 @@ public class TroubleshootingEvalRunner {
 
     private Set<String> expectedToolSet(List<String> expectedTools) {
         return expectedTools == null ? Set.of() : new LinkedHashSet<>(expectedTools);
+    }
+
+    private double toolParameterAccuracy(TroubleshootingGoldenSet.Case item, List<String> actualTools) {
+        Set<String> actualToolSet = new LinkedHashSet<>(actualTools);
+        Set<String> expectedToolSet = expectedToolSet(item.expectedTools());
+        int total = 3;
+        int matched = 0;
+        matched += parameterScore("knowledge_search_tool", expectedToolSet.contains("knowledge_search_tool"), actualToolSet);
+        matched += parameterScore("service_status_tool", expectedToolSet.contains("service_status_tool"), actualToolSet);
+        matched += parameterScore("log_search_tool", expectedToolSet.contains("log_search_tool"), actualToolSet);
+        return matched / (double) total;
+    }
+
+    private int parameterScore(String toolName, boolean expectedRequest, Set<String> actualToolSet) {
+        if (!expectedRequest) {
+            return actualToolSet.contains(toolName) ? 0 : 1;
+        }
+        return actualToolSet.contains(toolName) ? 1 : 0;
+    }
+
+    private double f1(int truePositive, int falsePositive, int falseNegative) {
+        double precisionDenominator = truePositive + falsePositive;
+        double recallDenominator = truePositive + falseNegative;
+        double precision = precisionDenominator == 0 ? 0.0 : truePositive / precisionDenominator;
+        double recall = recallDenominator == 0 ? 0.0 : truePositive / recallDenominator;
+        if (precision + recall == 0.0) {
+            return 0.0;
+        }
+        return 2 * precision * recall / (precision + recall);
     }
 
     private com.yuyu.fishagent.common.trace.TraceCollector nullTraceCollector() {

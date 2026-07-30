@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
-import { Menu, Collection, SwitchButton, ArrowLeft, Moon, Sunny, Tickets } from '@element-plus/icons-vue'
+import { Menu, Collection, SwitchButton, ArrowLeft, Moon, Sunny, Tickets, DataAnalysis } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/store/auth'
 import * as authApi from '@/api/auth'
 import { useDrawer } from '@/composables/useDrawer'
@@ -53,6 +53,10 @@ function goKnowledge() {
 function goCards() {
   void router.push('/cards')
 }
+
+function goEval() {
+  void router.push('/eval')
+}
 </script>
 
 <template>
@@ -75,6 +79,9 @@ function goCards() {
       </button>
       <button class="icon-btn" :class="{ active: route.path === '/cards' }" title="知识卡片" @click="goCards">
         <el-icon :size="16"><Tickets /></el-icon>
+      </button>
+      <button class="icon-btn" :class="{ active: route.path === '/eval' }" title="评测看板" @click="goEval">
+        <el-icon :size="16"><DataAnalysis /></el-icon>
       </button>
       <button class="icon-btn theme-toggle" :title="dark ? '切换亮色' : '切换暗色'" @click="toggle">
         <el-icon :size="16">

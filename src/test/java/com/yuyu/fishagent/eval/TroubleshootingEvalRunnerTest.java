@@ -23,7 +23,9 @@ class TroubleshootingEvalRunnerTest {
 
         assertThat(report.caseCount()).isEqualTo(4);
         assertThat(report.routeAccuracy()).isEqualTo(1.0);
+        assertThat(report.routeF1()).isEqualTo(1.0);
         assertThat(report.toolSelectionAccuracy()).isEqualTo(1.0);
+        assertThat(report.toolParameterAccuracy()).isEqualTo(1.0);
         assertThat(report.unauthorizedRecallCount()).isEqualTo(0);
         assertThat(report.recallAtK()).isGreaterThanOrEqualTo(0.75);
         assertThat(report.exactTokenHitRate()).isGreaterThanOrEqualTo(0.75);
