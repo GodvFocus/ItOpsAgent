@@ -11,17 +11,15 @@ import org.springframework.stereotype.Service;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.List;
+import java.util.UUID;
 
 /**
- * 基于 Redis Lua 的对话限流：令牌桶（每分钟等价速率）与 SSE 并发计数。
+ * 基于 Redis Lua 的对话限流服务：令牌桶、SSE 并发，以及带所有权令牌的会话互斥锁。
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class RateLimitService {
-
-    /** 会话锁兜底 TTL（秒）：正常路径在 SSE 结束时主动删除，避免进程崩溃导致永久死锁。 */
-    private static final int SESSION_MUTEX_TTL_SECONDS = 120;
 
     /**
      * 令牌桶：原子 refill + consume；返回 1=放行，0=拒绝。
@@ -69,7 +67,7 @@ public class RateLimitService {
             return cur
             """;
 
-    /** SSE 结束：计数安全递减（不小于 0）。 */
+    /** SSE 结束：计数安全递减，不小于 0。 */
     private static final String LUA_SSE_DECREMENT = """
             local key = KEYS[1]
             local v = tonumber(redis.call('GET', key))
@@ -79,17 +77,68 @@ public class RateLimitService {
             return redis.call('DECR', key)
             """;
 
+    /**
+     * 释放锁时先校验 request token，避免旧请求误删新锁。
+     */
+    private static final String LUA_SESSION_LOCK_COMPARE_AND_DELETE = """
+            local key = KEYS[1]
+            local token = ARGV[1]
+            if redis.call('GET', key) == token then
+                return redis.call('DEL', key)
+            end
+            return 0
+            """;
+
+    /**
+     * watchdog 续租时同样要校验 request token，避免把别人的锁续上。
+     */
+    private static final String LUA_SESSION_LOCK_COMPARE_AND_EXPIRE = """
+            local key = KEYS[1]
+            local token = ARGV[1]
+            local ttl = tonumber(ARGV[2])
+            if redis.call('GET', key) == token then
+                return redis.call('EXPIRE', key, ttl)
+            end
+            return 0
+            """;
+
     private final RateLimitProperties properties;
     private final StringRedisTemplate stringRedisTemplate;
 
     private final DefaultRedisScript<Long> tokenBucketScript = script(LUA_TOKEN_BUCKET);
     private final DefaultRedisScript<Long> sseTryIncrScript = script(LUA_SSE_TRY_INCREMENT);
     private final DefaultRedisScript<Long> sseDecrScript = script(LUA_SSE_DECREMENT);
+    private final DefaultRedisScript<Long> sessionLockReleaseScript = script(LUA_SESSION_LOCK_COMPARE_AND_DELETE);
+    private final DefaultRedisScript<Long> sessionLockRenewScript = script(LUA_SESSION_LOCK_COMPARE_AND_EXPIRE);
 
     /**
-     * 按顺序执行：令牌桶 → （可选）占用 SSE 槽位。
+     * 会话锁句柄：只在 managed=true 时对 Redis 中的锁拥有明确所有权。
+     */
+    public record SessionLockHandle(String sessionId, String requestToken, boolean managed) {
+
+        public static SessionLockHandle noop(String sessionId) {
+            return new SessionLockHandle(sessionId, "", false);
+        }
+
+        public static SessionLockHandle failOpen(String sessionId) {
+            return new SessionLockHandle(sessionId, "", false);
+        }
+
+        public static SessionLockHandle managed(String sessionId, String requestToken) {
+            return new SessionLockHandle(sessionId, requestToken, true);
+        }
+
+        public boolean isManaged() {
+            return managed
+                    && sessionId != null && !sessionId.isBlank()
+                    && requestToken != null && !requestToken.isBlank();
+        }
+    }
+
+    /**
+     * 按顺序执行：令牌桶 ->（可选）占用 SSE 槽位。
      *
-     * @param userId        当前用户 ID
+     * @param userId         当前用户 ID
      * @param acquireSseSlot 是否为 {@code POST /api/chat/stream}，需要占用 SSE 并发计数
      */
     public RateLimitResult evaluate(long userId, boolean acquireSseSlot) {
@@ -151,45 +200,102 @@ public class RateLimitService {
     }
 
     /**
-     * 尝试占用会话级分布式锁（SET NX EX）。
-     * <p>Redis 异常时 fail-open 返回 true，避免限流基础设施故障阻断全部对话。</p>
+     * 尝试占用会话级分布式锁。
+     * <p>锁值改为 request token；Redis 异常时仍沿用 fail-open，避免基础设施故障阻断全部对话。</p>
      *
-     * @param userId    当前用户（仅用于日志；锁 key 仅按 sessionId）
+     * @param userId    当前用户，仅用于日志
      * @param sessionId 会话 ID
-     * @return true 表示获得锁；false 表示该会话已有进行中的流
+     * @return 锁句柄；返回 {@code null} 表示已有其他请求持有锁
      */
-    public boolean tryAcquireSessionLock(Long userId, String sessionId) {
+    public SessionLockHandle tryAcquireSessionLock(Long userId, String sessionId) {
         if (sessionId == null || sessionId.isBlank()) {
-            return true;
+            return SessionLockHandle.noop(sessionId);
         }
+        String requestToken = UUID.randomUUID().toString();
         try {
             Boolean ok = stringRedisTemplate.opsForValue().setIfAbsent(
                     RedisKeys.mutexSession(sessionId),
-                    "1",
-                    Duration.ofSeconds(SESSION_MUTEX_TTL_SECONDS));
-            return Boolean.TRUE.equals(ok);
+                    requestToken,
+                    Duration.ofSeconds(sessionLockTtlSeconds()));
+            if (Boolean.TRUE.equals(ok)) {
+                return SessionLockHandle.managed(sessionId, requestToken);
+            }
+            return null;
         } catch (Exception e) {
             log.warn("[RateLimitService] 会话锁获取异常 userId={} sid={}, fail-open: {}",
                     userId, sessionId, e.getMessage());
-            return true;
+            return SessionLockHandle.failOpen(sessionId);
         }
     }
 
     /**
-     * 释放会话锁（DEL）。幂等：key 不存在时不报错。
+     * watchdog 续租。只有当前请求仍然是锁 owner 时才允许刷新 TTL。
      *
-     * @param userId    当前用户（日志用）
-     * @param sessionId 会话 ID
+     * @return true 表示仍持有或无需管理该锁；false 表示锁已过期或被其他请求接管
      */
-    public void releaseSessionLock(Long userId, String sessionId) {
-        if (sessionId == null || sessionId.isBlank()) {
+    public boolean refreshSessionLock(Long userId, SessionLockHandle lockHandle) {
+        if (lockHandle == null || !lockHandle.isManaged()) {
+            return true;
+        }
+        try {
+            Long renewed = stringRedisTemplate.execute(
+                    sessionLockRenewScript,
+                    List.of(RedisKeys.mutexSession(lockHandle.sessionId())),
+                    lockHandle.requestToken(),
+                    String.valueOf(sessionLockTtlSeconds()));
+            if (Long.valueOf(1L).equals(renewed)) {
+                return true;
+            }
+            log.warn("[RateLimitService] 会话锁续租失败 userId={} sid={}, token 已失效或所有权已变化",
+                    userId, lockHandle.sessionId());
+            return false;
+        } catch (Exception e) {
+            log.warn("[RateLimitService] 会话锁续租异常 userId={} sid={}: {}",
+                    userId, lockHandle.sessionId(), e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * 释放会话锁；只有 owner token 匹配时才会真正删除 key。
+     */
+    public void releaseSessionLock(Long userId, SessionLockHandle lockHandle) {
+        if (lockHandle == null || !lockHandle.isManaged()) {
             return;
         }
         try {
-            stringRedisTemplate.delete(RedisKeys.mutexSession(sessionId));
+            Long released = stringRedisTemplate.execute(
+                    sessionLockReleaseScript,
+                    List.of(RedisKeys.mutexSession(lockHandle.sessionId())),
+                    lockHandle.requestToken());
+            if (Long.valueOf(0L).equals(released)) {
+                log.debug("[RateLimitService] 会话锁释放跳过 userId={} sid={}, key 已过期或所有权已变化",
+                        userId, lockHandle.sessionId());
+            }
         } catch (Exception e) {
-            log.warn("[RateLimitService] 会话锁释放异常 userId={} sid={}: {}", userId, sessionId, e.getMessage());
+            log.warn("[RateLimitService] 会话锁释放异常 userId={} sid={}: {}",
+                    userId, lockHandle.sessionId(), e.getMessage());
         }
+    }
+
+    /**
+     * 返回会话锁 watchdog 续租周期。
+     */
+    public Duration sessionLockWatchdogInterval() {
+        RateLimitProperties.SessionMutex mutex = sessionMutex();
+        int ttlSeconds = sessionLockTtlSeconds();
+        int rawInterval = Math.max(1, mutex.watchdogIntervalSeconds());
+        int boundedInterval = Math.min(rawInterval, Math.max(1, ttlSeconds - 1));
+        return Duration.ofSeconds(boundedInterval);
+    }
+
+    private int sessionLockTtlSeconds() {
+        return Math.max(5, sessionMutex().ttlSeconds());
+    }
+
+    private RateLimitProperties.SessionMutex sessionMutex() {
+        RateLimitProperties.SessionMutex mutex = properties.getSessionMutex();
+        return mutex == null ? new RateLimitProperties.SessionMutex(120, 40) : mutex;
     }
 
     private static int estimateRetryAfterSeconds(double refillRatePerSecond) {

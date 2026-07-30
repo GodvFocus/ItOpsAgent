@@ -6,7 +6,7 @@ import org.springframework.stereotype.Component;
 
 /**
  * 对话限流配置：{@code fish.rate-limit.*}。
- * <p>嵌套 record 无无参构造器，字段默认值使用显式构造参数；YAML 存在时由 Spring Boot 绑定覆盖。</p>
+ * <p>嵌套 record 无无参构造器，因此默认值通过显式构造参数提供；YAML 存在时由 Spring Boot 绑定覆盖。</p>
  */
 @Data
 @Component
@@ -21,7 +21,12 @@ public class RateLimitProperties {
     /** SSE 并发：最大连接数、计数 key TTL（秒，兜底防泄漏）。 */
     private SseConcurrent sseConcurrent = new SseConcurrent(2, 300);
 
+    /** 会话互斥锁：TTL 与 watchdog 续租周期（秒）。 */
+    private SessionMutex sessionMutex = new SessionMutex(120, 40);
+
     public record TokenBucket(int capacity, double refillRate, int keyTtl) {}
 
     public record SseConcurrent(int maxConnections, int keyTtl) {}
+
+    public record SessionMutex(int ttlSeconds, int watchdogIntervalSeconds) {}
 }

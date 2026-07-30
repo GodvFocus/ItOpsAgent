@@ -30,6 +30,7 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import reactor.core.publisher.Flux;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
@@ -60,7 +61,10 @@ class ChatServiceObservabilityTest {
                         new ShortTermMemorySnapshot("", List.of()), false));
 
         RateLimitService rateLimitService = mock(RateLimitService.class);
-        when(rateLimitService.tryAcquireSessionLock(any(), anyString())).thenReturn(true);
+        when(rateLimitService.tryAcquireSessionLock(any(), anyString()))
+                .thenReturn(RateLimitService.SessionLockHandle.managed("sid", "token"));
+        when(rateLimitService.sessionLockWatchdogInterval()).thenReturn(Duration.ofSeconds(30));
+        when(rateLimitService.refreshSessionLock(any(), any())).thenReturn(true);
 
         RagRecall.Augmentation augmentation = mock(RagRecall.Augmentation.class);
         when(augmentation.buildAugmentation(anyString(), anyString(), any(), anyInt())).thenReturn(Optional.empty());

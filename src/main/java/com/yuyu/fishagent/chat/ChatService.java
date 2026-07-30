@@ -50,6 +50,7 @@ import com.yuyu.fishagent.rag.pipeline.recall.RagRecall;
 import com.yuyu.fishagent.agent.config.AgentProperties;
 import com.yuyu.fishagent.memory.config.MemoryProperties;
 import com.yuyu.fishagent.common.ratelimit.RateLimitService;
+import com.yuyu.fishagent.common.ratelimit.RateLimitService.SessionLockHandle;
 import com.yuyu.fishagent.common.dto.ChatMessageDTO;
 import com.yuyu.fishagent.chat.dto.SessionInfo;
 import com.yuyu.fishagent.common.exception.SessionLockedException;
@@ -350,19 +351,25 @@ public class ChatService {
         // SSE 返回后 Filter 会清理 Servlet 线程 MDC，流式完成回调需显式复用入口处的 MDC 快照。
         final Map<String, String> streamMdcSnapshot = MDC.getCopyOfContextMap();
         AtomicBoolean normalCompletion = new AtomicBoolean(false);
+        final SessionLockHandle sessionLock = rateLimitService.tryAcquireSessionLock(streamUserId, sid);
+        final Disposable[] disposableRef = new Disposable[1];
+        final Disposable[] sessionLockWatchdogRef = new Disposable[1];
 
         // 须先于会话锁检查创建：拦截器已对 SSE 并发 INCR，若抢锁失败须在此 Runnable 中 DECR，否则槽位泄漏。
         AtomicBoolean sseSlotReleased = new AtomicBoolean(false);
         Runnable releaseSseSlotOnce = () -> {
             if (sseSlotReleased.compareAndSet(false, true)) {
+                if (sessionLockWatchdogRef[0] != null) {
+                    sessionLockWatchdogRef[0].dispose();
+                }
                 if (streamUserId != null) {
                     rateLimitService.decrementSseConcurrent(streamUserId);
                 }
-                rateLimitService.releaseSessionLock(streamUserId, sid);
+                rateLimitService.releaseSessionLock(streamUserId, sessionLock);
             }
         };
 
-        if (!rateLimitService.tryAcquireSessionLock(streamUserId, sid)) {
+        if (sessionLock == null) {
             releaseSseSlotOnce.run();
             SessionLockedException error = new SessionLockedException("此会话正在处理中，请等待回复完成后再发送");
             turnLifecycle.error(error);
@@ -413,7 +420,6 @@ public class ChatService {
 
         // 2. 注册 emitter 生命周期回调（必须在 subscribe 之前：若 onComplete 异步触发并调用
         //    emitter.complete() 时回调尚未注册，releaseSseSlotOnce 将永远不被执行，导致会话锁泄漏）。
-        final Disposable[] disposableRef = new Disposable[1];
         // SSE 生命周期回调运行在非 Servlet 线程，需从入口快照恢复 MDC 以保证日志携带 traceId。
         emitter.onTimeout(() -> {
             if (streamMdcSnapshot != null) MDC.setContextMap(streamMdcSnapshot);
@@ -448,6 +454,16 @@ public class ChatService {
             turnLifecycle.error(e);
             persistTraceOnce.run();
         });
+        sessionLockWatchdogRef[0] = startSessionLockWatchdog(
+                sid,
+                streamUserId,
+                sessionLock,
+                emitter,
+                disposableRef,
+                releaseSseSlotOnce,
+                turnLifecycle,
+                streamMdcSnapshot,
+                persistTraceOnce);
 
         // 3. 订阅流式输出
         AssistantBuf assistantBuf = new AssistantBuf();
@@ -1251,6 +1267,51 @@ public class ChatService {
         safeError(emitter, err);
         turnLifecycle.error(err);
         persistTraceOnce.run();
+    }
+
+    /**
+     * 会话锁 watchdog：周期性续租；一旦发现 TTL 已过期或锁 owner 已变化，立即中止当前流。
+     */
+    private Disposable startSessionLockWatchdog(String sid,
+                                                Long streamUserId,
+                                                SessionLockHandle sessionLock,
+                                                SseEmitter emitter,
+                                                Disposable[] disposableRef,
+                                                Runnable releaseSseSlotOnce,
+                                                ChatTurnLifecycle turnLifecycle,
+                                                Map<String, String> streamMdcSnapshot,
+                                                Runnable persistTraceOnce) {
+        return Flux.interval(rateLimitService.sessionLockWatchdogInterval())
+                .subscribe(tick -> {
+                    if (rateLimitService.refreshSessionLock(streamUserId, sessionLock)) {
+                        return;
+                    }
+                    if (streamMdcSnapshot != null) {
+                        MDC.setContextMap(streamMdcSnapshot);
+                    }
+                    try {
+                        log.warn("[ChatService] 会话锁所有权丢失，终止当前流 sid={}", sid);
+                    } finally {
+                        MDC.clear();
+                    }
+                    if (disposableRef[0] != null) {
+                        disposableRef[0].dispose();
+                    }
+                    releaseSseSlotOnce.run();
+                    SessionLockedException error = new SessionLockedException("会话锁已失效，本次回复已中止，请重试");
+                    safeError(emitter, error);
+                    turnLifecycle.error(error);
+                    persistTraceOnce.run();
+                }, err -> {
+                    if (streamMdcSnapshot != null) {
+                        MDC.setContextMap(streamMdcSnapshot);
+                    }
+                    try {
+                        log.warn("[ChatService] 会话锁 watchdog 异常 sid={}: {}", sid, err.getMessage());
+                    } finally {
+                        MDC.clear();
+                    }
+                });
     }
 
     private void handleStreamCompletion(String turnId,
