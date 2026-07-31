@@ -12,11 +12,11 @@
         <version>3.5.13</version>
         <relativePath/> <!-- lookup parent from repository -->
     </parent>
-    <groupId>com.yuyu</groupId>
-    <artifactId>Fish-Agent</artifactId>
+    <groupId>com.ai</groupId>
+    <artifactId>itops</artifactId>
     <version>0.0.1-SNAPSHOT</version>
-    <name>Fish-Agent</name>
-    <description>Fish-Agent</description>
+    <name>itops</name>
+    <description>itops</description>
     <url/>
     <licenses>
         <license/>

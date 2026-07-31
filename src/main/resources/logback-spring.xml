@@ -20,5 +20,5 @@
     </root>
 
     <!-- 业务包保留 DEBUG，便于通过 traceId grep 单次请求的完整链路。 -->
-    <logger name="com.yuyu.fishagent" level="DEBUG"/>
+    <logger name="com.ai.itops" level="DEBUG"/>
 </configuration>

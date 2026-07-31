@@ -132,7 +132,7 @@ management:
 logging:
   level:
     reactor.netty.http.client: DEBUG
-    com.yuyu.fishagent:
+    com.ai.itops:
       agent: debug
       auth: debug
       chat: debug

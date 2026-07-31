@@ -37,7 +37,7 @@ cd python && pip install -e . && python -m fish_worker
 
 ## 架构概述
 
-项目是通用型 AI Agent 应用（正收敛为研发/SRE 排障辅助 Agent），单 Maven 模块，包结构 `com.yuyu.fishagent`：
+项目是通用型 AI Agent 应用（正收敛为研发/SRE 排障辅助 Agent），单 Maven 模块，包结构 `com.ai.itops`：
 
 ### 核心模块
 
