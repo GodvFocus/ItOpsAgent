@@ -9,7 +9,8 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
         "com.ai.itops.auth.mapper",
         "com.ai.itops.chat.mapper",
         "com.ai.itops.rag.mapper",
-        "com.ai.itops.card.mapper"
+        "com.ai.itops.card.mapper",
+        "com.ai.itops.security.permission.mapper"
 })
 public class ItopsAgentApplication {
 

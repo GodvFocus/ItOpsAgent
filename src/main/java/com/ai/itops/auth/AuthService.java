@@ -10,6 +10,7 @@ import com.ai.itops.auth.dto.RegisterRequest;
 import com.ai.itops.auth.entity.SysUser;
 import com.ai.itops.auth.enums.UserRole;
 import com.ai.itops.auth.mapper.SysUserMapper;
+import com.ai.itops.security.permission.WorkspaceService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
@@ -30,6 +31,12 @@ public class AuthService {
     private final RedisSessionManager redisSessionManager;
     private final AuthProperties authProperties;
     private final BCryptPasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
+    private WorkspaceService workspaceService;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setWorkspaceService(WorkspaceService workspaceService) {
+        this.workspaceService = workspaceService;
+    }
 
     /**
      * 新用户注册：用户名唯一，密码 BCrypt 存储。
@@ -55,6 +62,9 @@ public class AuthService {
         u.setCreatedAt(now);
         u.setUpdatedAt(now);
         sysUserMapper.insert(u);
+        if (workspaceService != null) {
+            workspaceService.ensureDefaultMembership(u.getId());
+        }
 
         return issueSession(u);
     }
@@ -92,6 +102,9 @@ public class AuthService {
      * @return token 与用户信息
      */
     private LoginResponse issueSession(SysUser u) {
+        if (workspaceService != null) {
+            workspaceService.ensureDefaultMembership(u.getId());
+        }
         String nick = resolveDisplayNickname(u);
         String workspaceId = resolveWorkspaceId();
         UserContext ctx = new UserContext(u.getId(), workspaceId, u.getUsername(), nick, u.getRole());

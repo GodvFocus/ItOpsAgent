@@ -6,6 +6,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.server.ResponseStatusException;
+import com.ai.itops.security.permission.PermissionDeniedException;
 
 import java.util.Map;
 
@@ -45,6 +46,14 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(e.getStatusCode()).body(Map.of(
                 "code", code,
                 "message", e.getReason() == null ? "" : e.getReason()
+        ));
+    }
+
+    @ExceptionHandler(PermissionDeniedException.class)
+    public ResponseEntity<Map<String, Object>> permissionDenied(PermissionDeniedException e) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of(
+                "code", PermissionDeniedException.CODE,
+                "message", e.getMessage() == null ? "forbidden" : e.getMessage()
         ));
     }
 
