@@ -7,6 +7,10 @@ import com.ai.itops.rag.dto.DocumentMetadataResponse;
 import com.ai.itops.rag.config.MilvusProperties;
 import com.ai.itops.rag.entity.DocumentMetadata;
 import com.ai.itops.rag.mapper.DocumentMetadataMapper;
+import com.ai.itops.auth.context.UserContextHolder;
+import com.ai.itops.security.permission.DefaultPermissionEvaluator;
+import com.ai.itops.security.permission.PermissionEvaluator;
+import com.ai.itops.security.permission.WorkspacePermission;
 import io.milvus.client.MilvusServiceClient;
 import io.milvus.param.dml.DeleteParam;
 import lombok.RequiredArgsConstructor;
@@ -39,6 +43,12 @@ public class KnowledgeManageService {
     private final ChunkClusterService chunkClusterService;
     private final ObjectProvider<MilvusServiceClient> milvusClientProvider;
     private final MilvusProperties milvusProperties;
+    private PermissionEvaluator permissionEvaluator;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setPermissionEvaluator(PermissionEvaluator permissionEvaluator) {
+        this.permissionEvaluator = permissionEvaluator;
+    }
 
     /**
      * 当前用户可见的上传任务（按更新时间倒序）。
@@ -47,8 +57,12 @@ public class KnowledgeManageService {
         if (userId == null) {
             throw new IllegalStateException("未登录");
         }
+        if (permissionEvaluator != null) {
+            permissionEvaluator.checkWorkspacePermission(userId, workspaceId, WorkspacePermission.DOCUMENT_READ);
+        }
         Page<DocumentMetadata> p = new Page<>(Math.max(1, page), Math.min(100, Math.max(1, size)));
         documentMetadataMapper.selectPage(p, Wrappers.<DocumentMetadata>lambdaQuery()
+                .eq(DocumentMetadata::getWorkspaceId, workspaceId)
                 .and(q -> q.eq(DocumentMetadata::getUserId, userId)
                         .or(shared -> shared.eq(DocumentMetadata::getWorkspaceId, workspaceId)
                                 .eq(DocumentMetadata::getVisibility, DocumentMetadata.VISIBILITY_WORKSPACE)))
@@ -60,8 +74,18 @@ public class KnowledgeManageService {
      * 管理员：全部上传任务。
      */
     public DocumentMetadataPageResponse listAll(long page, long size) {
+        return listAllForWorkspace(UserContextHolder.currentWorkspaceIdOrNull(), page, size);
+    }
+
+    /** 管理员在指定 Workspace 内查看文档，不能扫描全库后再在内存过滤。 */
+    public DocumentMetadataPageResponse listAllForWorkspace(String workspaceId, long page, long size) {
+        Long userId = UserContextHolder.currentUserIdOrNull();
+        if (permissionEvaluator != null) {
+            permissionEvaluator.checkWorkspacePermission(userId, workspaceId, WorkspacePermission.DOCUMENT_READ);
+        }
         Page<DocumentMetadata> p = new Page<>(Math.max(1, page), Math.min(100, Math.max(1, size)));
         documentMetadataMapper.selectPage(p, Wrappers.<DocumentMetadata>lambdaQuery()
+                .eq(DocumentMetadata::getWorkspaceId, workspaceId)
                 .orderByDesc(DocumentMetadata::getUpdatedAt));
         return toPageResponse(p);
     }
@@ -71,15 +95,30 @@ public class KnowledgeManageService {
      * <p>删除顺序：RustFS 原文件 → Milvus 切片 → 本地缓存 → MySQL 元数据。</p>
      */
     public void deleteByTaskId(String taskId, Long actorUserId, boolean actorIsAdmin) {
+        deleteByTaskId(taskId, actorUserId, actorIsAdmin, UserContextHolder.currentWorkspaceIdOrNull());
+    }
+
+    /** 删除时同时以 taskId 与 workspaceId 限定 SQL 范围，防止 IDOR。 */
+    public void deleteByTaskId(String taskId, Long actorUserId, boolean actorIsAdmin, String workspaceId) {
         if (taskId == null || taskId.isBlank()) {
             throw new IllegalArgumentException("taskId 不能为空");
         }
         DocumentMetadata row = documentMetadataMapper.selectOne(Wrappers.<DocumentMetadata>lambdaQuery()
-                .eq(DocumentMetadata::getTaskId, taskId.trim()));
+                .eq(DocumentMetadata::getTaskId, taskId.trim())
+                .eq(DocumentMetadata::getWorkspaceId, workspaceId));
         if (row == null) {
             throw new ResponseStatusException(NOT_FOUND, "任务不存在");
         }
-        if (!actorIsAdmin && (actorUserId == null || !actorUserId.equals(row.getUserId()))) {
+        if (permissionEvaluator != null) {
+            if (permissionEvaluator instanceof DefaultPermissionEvaluator evaluator) {
+                evaluator.checkDocumentPermission(actorUserId, workspaceId, taskId.trim(),
+                        WorkspacePermission.DOCUMENT_DELETE);
+            } else {
+                permissionEvaluator.checkResourcePermission(actorUserId, workspaceId,
+                        com.ai.itops.security.permission.ResourceType.DOCUMENT,
+                        String.valueOf(row.getId()), WorkspacePermission.DOCUMENT_DELETE);
+            }
+        } else if (!actorIsAdmin && (actorUserId == null || !actorUserId.equals(row.getUserId()))) {
             throw new ResponseStatusException(FORBIDDEN, "无权删除该文档");
         }
 
@@ -87,7 +126,8 @@ public class KnowledgeManageService {
         deleteMilvusQuietly(row);
         chunkClusterService.evictClusterCache(row.getTaskId());
         documentMetadataMapper.delete(Wrappers.<DocumentMetadata>lambdaQuery()
-                .eq(DocumentMetadata::getTaskId, row.getTaskId()));
+                .eq(DocumentMetadata::getTaskId, row.getTaskId())
+                .eq(DocumentMetadata::getWorkspaceId, workspaceId));
         log.info("[KnowledgeManage] 已删除文档任务 taskId={}, visibility={}", row.getTaskId(), row.getVisibility());
     }
 

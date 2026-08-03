@@ -23,6 +23,8 @@ import com.ai.itops.rag.service.DocumentIngestOutboxService;
 import com.ai.itops.rag.service.KnowledgeIngestionService;
 import com.ai.itops.rag.service.KnowledgeManageService;
 import com.ai.itops.rag.service.MultipartInitResult;
+import com.ai.itops.security.permission.PermissionEvaluator;
+import com.ai.itops.security.permission.WorkspacePermission;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -55,6 +57,12 @@ public class KnowledgeController {
     private final KnowledgeManageService knowledgeManageService;
     private final ChunkClusterService chunkClusterService;
     private final DocumentMetadataMapper documentMetadataMapper;
+    private PermissionEvaluator permissionEvaluator;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setPermissionEvaluator(PermissionEvaluator permissionEvaluator) {
+        this.permissionEvaluator = permissionEvaluator;
+    }
 
     @PostMapping(value = "/api/knowledge/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public KnowledgeUploadResponse uploadUser(@RequestPart("file") MultipartFile file) throws Exception {
@@ -167,7 +175,7 @@ public class KnowledgeController {
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "20") long size) {
         requireAdmin();
-        return knowledgeManageService.listAll(page, size);
+        return knowledgeManageService.listAllForWorkspace(UserContextHolder.currentWorkspaceIdOrNull(), page, size);
     }
 
     /**
@@ -177,7 +185,8 @@ public class KnowledgeController {
     public void deleteDocument(@PathVariable String taskId) {
         UserContext ctx = UserContextHolder.get();
         Long uid = ctx == null ? null : ctx.userId();
-        knowledgeManageService.deleteByTaskId(taskId, uid, isAdmin());
+        knowledgeManageService.deleteByTaskId(taskId, uid, isAdmin(),
+                ctx == null ? null : ctx.workspaceId());
     }
 
     /**
@@ -226,13 +235,20 @@ public class KnowledgeController {
         if (taskId == null || taskId.isBlank()) {
             throw new IllegalArgumentException("taskId 不能为空");
         }
+        String workspaceId = UserContextHolder.currentWorkspaceIdOrNull();
         DocumentMetadata row = documentMetadataMapper.selectOne(Wrappers.<DocumentMetadata>lambdaQuery()
-                .eq(DocumentMetadata::getTaskId, taskId.trim()));
+                .eq(DocumentMetadata::getTaskId, taskId.trim())
+                .eq(DocumentMetadata::getWorkspaceId, workspaceId));
         if (row == null) {
             throw new ResponseStatusException(NOT_FOUND, "任务不存在");
         }
         UserContext ctx = UserContextHolder.get();
         Long uid = ctx == null ? null : ctx.userId();
+        if (permissionEvaluator != null) {
+            permissionEvaluator.checkResourcePermission(uid, workspaceId,
+                    com.ai.itops.security.permission.ResourceType.DOCUMENT,
+                    String.valueOf(row.getId()), WorkspacePermission.DOCUMENT_READ);
+        }
         boolean owner = uid != null && uid.equals(row.getUserId());
         boolean workspaceVisible = ctx != null
                 && Objects.equals(ctx.workspaceId(), row.getWorkspaceId())
@@ -259,15 +275,19 @@ public class KnowledgeController {
     @PostMapping("/api/admin/knowledge/tasks/{taskId}/replay")
     public void replayTask(@PathVariable String taskId) {
         requireAdmin();
-        documentIngestOutboxService.requestReplay(taskId);
+        UserContext ctx = UserContextHolder.get();
+        documentIngestOutboxService.requestReplay(taskId,
+                ctx == null ? null : ctx.workspaceId(), ctx == null ? null : ctx.userId());
     }
 
     /**
      * 加载 PENDING 任务并校验当前用户可变更（本人或 ADMIN）。
      */
     private DocumentMetadata loadPendingTaskForMutation(String taskId) {
+        String workspaceId = UserContextHolder.currentWorkspaceIdOrNull();
         DocumentMetadata row = documentMetadataMapper.selectOne(Wrappers.<DocumentMetadata>lambdaQuery()
-                .eq(DocumentMetadata::getTaskId, taskId));
+                .eq(DocumentMetadata::getTaskId, taskId)
+                .eq(DocumentMetadata::getWorkspaceId, workspaceId));
         if (row == null) {
             throw new ResponseStatusException(NOT_FOUND, "任务不存在");
         }
@@ -276,6 +296,15 @@ public class KnowledgeController {
         }
         UserContext ctx = UserContextHolder.get();
         Long uid = ctx == null ? null : ctx.userId();
+        if (permissionEvaluator != null) {
+            if (permissionEvaluator instanceof com.ai.itops.security.permission.DefaultPermissionEvaluator evaluator) {
+                evaluator.checkDocumentPermission(uid, workspaceId, taskId, WorkspacePermission.DOCUMENT_UPDATE);
+            } else {
+                permissionEvaluator.checkResourcePermission(uid, workspaceId,
+                        com.ai.itops.security.permission.ResourceType.DOCUMENT,
+                        String.valueOf(row.getId()), WorkspacePermission.DOCUMENT_UPDATE);
+            }
+        }
         if (!isAdmin() && (uid == null || !Objects.equals(uid, row.getUserId()))) {
             throw new ResponseStatusException(FORBIDDEN, "无权操作该任务");
         }

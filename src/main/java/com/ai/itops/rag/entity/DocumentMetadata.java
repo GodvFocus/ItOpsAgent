@@ -36,6 +36,10 @@ public class DocumentMetadata {
     @TableField("user_id")
     private Long userId;
 
+    /** 资源创建者，服务端写入，供 EDITOR 的资源所有权判断使用。 */
+    @TableField("created_by")
+    private Long createdBy;
+
     @TableField("workspace_id")
     private String workspaceId;
 

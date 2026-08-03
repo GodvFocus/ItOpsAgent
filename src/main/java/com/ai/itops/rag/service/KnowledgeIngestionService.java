@@ -5,6 +5,10 @@ import com.ai.itops.rag.config.KnowledgeProperties;
 import com.ai.itops.rag.dto.MultipartPartInfo;
 import com.ai.itops.rag.entity.DocumentMetadata;
 import com.ai.itops.rag.mapper.DocumentMetadataMapper;
+import com.ai.itops.auth.context.UserContextHolder;
+import com.ai.itops.security.permission.PermissionEvaluator;
+import com.ai.itops.security.permission.PermissionDeniedException;
+import com.ai.itops.security.permission.WorkspacePermission;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
@@ -28,6 +32,12 @@ public class KnowledgeIngestionService {
     private final ObjectProvider<RustFsService> rustFsProvider;
     private final DocumentMetadataMapper documentMetadataMapper;
     private final DocumentIngestOutboxService documentIngestOutboxService;
+    private PermissionEvaluator permissionEvaluator;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setPermissionEvaluator(PermissionEvaluator permissionEvaluator) {
+        this.permissionEvaluator = permissionEvaluator;
+    }
 
     /**
      * 用户上传私有文档：scope PRIVATE，对象键前缀 {@code user/{userId}/}。
@@ -58,6 +68,7 @@ public class KnowledgeIngestionService {
         if (userId == null) {
             throw new IllegalArgumentException("userId 不能为空");
         }
+        checkUploadPermission(userId, workspaceId);
         if (stream == null || size <= 0) {
             throw new IllegalArgumentException("文件内容为空或大小无效");
         }
@@ -76,6 +87,7 @@ public class KnowledgeIngestionService {
         DocumentMetadata row = new DocumentMetadata();
         row.setTaskId(taskId);
         row.setUserId(userId);
+        row.setCreatedBy(userId);
         row.setWorkspaceId(normalizeWorkspaceId(workspaceId));
         row.setFileName(originalFilename == null || originalFilename.isBlank() ? safeName : originalFilename.trim());
         row.setFileSize(size);
@@ -118,6 +130,7 @@ public class KnowledgeIngestionService {
         if (fileSize <= 0) {
             throw new IllegalArgumentException("fileSize 无效");
         }
+        checkUploadPermission(userId, workspaceId);
         RustFsService rustFs = rustFsProvider.getIfAvailable();
         if (rustFs == null) {
             throw new IllegalArgumentException("知识库上传需要开启 fish.rustfs.enabled=true 并正确配置对象存储");
@@ -135,6 +148,7 @@ public class KnowledgeIngestionService {
         DocumentMetadata row = new DocumentMetadata();
         row.setTaskId(taskId);
         row.setUserId(userId);
+        row.setCreatedBy(userId);
         row.setWorkspaceId(normalizeWorkspaceId(workspaceId));
         row.setFileName(originalFilename == null || originalFilename.isBlank() ? safeName : originalFilename.trim());
         row.setFileSize(fileSize);
@@ -297,6 +311,18 @@ public class KnowledgeIngestionService {
             return "default";
         }
         return workspaceId.trim();
+    }
+
+    private void checkUploadPermission(Long userId, String workspaceId) {
+        if (permissionEvaluator == null) {
+            return;
+        }
+        Long authenticatedUserId = UserContextHolder.currentUserIdOrNull();
+        if (authenticatedUserId == null || !authenticatedUserId.equals(userId)) {
+            throw new PermissionDeniedException("操作者身份无效");
+        }
+        permissionEvaluator.checkWorkspacePermission(authenticatedUserId,
+                normalizeWorkspaceId(workspaceId), WorkspacePermission.DOCUMENT_UPLOAD);
     }
 
     private static String safeWorkspaceSegment(String workspaceId) {

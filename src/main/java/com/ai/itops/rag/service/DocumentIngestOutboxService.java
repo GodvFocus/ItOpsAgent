@@ -8,6 +8,11 @@ import com.ai.itops.rag.entity.DocumentIngestOutbox;
 import com.ai.itops.rag.entity.DocumentMetadata;
 import com.ai.itops.rag.mapper.DocumentIngestOutboxMapper;
 import com.ai.itops.rag.mapper.DocumentMetadataMapper;
+import com.ai.itops.security.permission.DefaultPermissionEvaluator;
+import com.ai.itops.security.permission.PermissionEvaluator;
+import com.ai.itops.security.permission.ResourceType;
+import com.ai.itops.security.permission.WorkspacePermission;
+import com.ai.itops.auth.context.UserContextHolder;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
@@ -39,6 +44,12 @@ public class DocumentIngestOutboxService {
     private final DocumentIngestOutboxMapper documentIngestOutboxMapper;
     private final ObjectProvider<StringRedisTemplate> stringRedisTemplateProvider;
     private final KnowledgeProperties knowledgeProperties;
+    private PermissionEvaluator permissionEvaluator;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setPermissionEvaluator(PermissionEvaluator permissionEvaluator) {
+        this.permissionEvaluator = permissionEvaluator;
+    }
 
     @Transactional(rollbackFor = Exception.class)
     public void createPendingTask(DocumentMetadata row) {
@@ -91,6 +102,34 @@ public class DocumentIngestOutboxService {
         log.info("[DocOutbox] 已请求人工重放 taskId={}, previousStatus={}", row.getTaskId(), row.getStatus());
     }
 
+    /** 带 Workspace 归属校验的人工重放入口。 */
+    @Transactional(rollbackFor = Exception.class)
+    public void requestReplay(String taskId, String workspaceId, Long operatorId) {
+        if (permissionEvaluator != null) {
+            if (permissionEvaluator instanceof DefaultPermissionEvaluator evaluator) {
+                evaluator.checkDocumentPermission(operatorId, workspaceId, taskId,
+                        WorkspacePermission.DOCUMENT_UPDATE);
+            } else {
+                permissionEvaluator.checkResourcePermission(operatorId, workspaceId, ResourceType.DOCUMENT,
+                        taskId, WorkspacePermission.DOCUMENT_UPDATE);
+            }
+        }
+        DocumentIngestOutbox row = documentIngestOutboxMapper.selectOne(Wrappers.<DocumentIngestOutbox>lambdaQuery()
+                .eq(DocumentIngestOutbox::getTaskId, taskId)
+                .eq(DocumentIngestOutbox::getWorkspaceId, workspaceId));
+        if (row == null) {
+            throw new ResponseStatusException(NOT_FOUND, "outbox 任务不存在");
+        }
+        LocalDateTime now = LocalDateTime.now();
+        documentIngestOutboxMapper.resetForReplay(row.getTaskId(), now);
+        documentMetadataMapper.update(null, Wrappers.<DocumentMetadata>lambdaUpdate()
+                .eq(DocumentMetadata::getTaskId, row.getTaskId())
+                .eq(DocumentMetadata::getWorkspaceId, workspaceId)
+                .set(DocumentMetadata::getStatus, DocumentMetadata.STATUS_PENDING)
+                .set(DocumentMetadata::getErrorMsg, null)
+                .set(DocumentMetadata::getUpdatedAt, now));
+    }
+
     public List<DocumentIngestOutboxResponse> listDeadLetters(int limit) {
         int safeLimit = Math.max(1, Math.min(limit, knowledgeProperties.getOutbox().getDlqListLimit()));
         return documentIngestOutboxMapper.selectDeadLetters(safeLimit).stream()
@@ -137,6 +176,10 @@ public class DocumentIngestOutboxService {
         body.put("workspace_id", normalizeWorkspaceId(row.getWorkspaceId()));
         body.put("visibility", row.getVisibility());
         body.put("user_id", String.valueOf(row.getUserId()));
+        body.put("operator_id", String.valueOf(row.getUserId()));
+        body.put("created_by", String.valueOf(row.getUserId()));
+        body.put("document_id", row.getTaskId());
+        body.put("knowledge_base_id", "");
         body.put("file_name", row.getFileName() == null ? "" : row.getFileName());
         body.put("file_size", String.valueOf(row.getFileSize() == null ? 0L : row.getFileSize()));
         body.put("trace_id", row.getTraceId());

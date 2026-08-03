@@ -102,7 +102,8 @@ public class ChunkClusterService {
             throw new IllegalArgumentException("taskId 不能为空");
         }
         DocumentMetadata row = documentMetadataMapper.selectOne(Wrappers.<DocumentMetadata>lambdaQuery()
-                .eq(DocumentMetadata::getTaskId, taskId.trim()));
+                .eq(DocumentMetadata::getTaskId, taskId.trim())
+                .eq(DocumentMetadata::getWorkspaceId, currentWorkspaceId));
         if (row == null) {
             throw new ResponseStatusException(NOT_FOUND, "文档不存在");
         }

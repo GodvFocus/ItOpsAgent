@@ -98,6 +98,18 @@ class DocumentMetadataRepository:
         )
         return affected
 
+    def validate_scope(self, task_id: str, workspace_id: str) -> bool:
+        """在 Worker 开始处理前重新校验 taskId 与 Workspace 的关系，防止旧消息串空间。"""
+        sql = (
+            "SELECT status FROM document_metadata "
+            "WHERE task_id=%s AND workspace_id=%s LIMIT 1"
+        )
+        with self._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, [task_id, workspace_id])
+                row = cur.fetchone()
+        return row is not None and row["status"] not in ("FAILED", "DELETED")
+
     def touch(self, task_id: str) -> int:
         """刷新 PROCESSING 任务的 updated_at，用于告诉 Java 侧孤儿补偿“任务仍活着”。
 

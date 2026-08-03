@@ -60,6 +60,10 @@ def _fields_to_task(fields: dict[str, str]) -> IngestTask:
         file_name=fields.get("file_name", "").strip(),
         file_size=fields.get("file_size"),
         trace_id=fields.get(TRACE_FIELD_NAME, "").strip() or fields.get("task_id", "").strip(),
+        knowledge_base_id=fields.get("knowledge_base_id", "").strip(),
+        document_id=fields.get("document_id", "").strip() or fields.get("task_id", "").strip(),
+        operator_id=fields.get("operator_id", "").strip() or fields.get("user_id", "").strip(),
+        created_by=fields.get("created_by", "").strip() or fields.get("user_id", "").strip(),
     )
 
 

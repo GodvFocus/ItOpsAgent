@@ -45,6 +45,10 @@ class IngestProcessor:
 
     def process(self, task: "IngestTask") -> None:
         """执行单条文档的完整处理流水线。"""
+        validate_scope = getattr(self._db, "validate_scope", None)
+        if callable(validate_scope) and not validate_scope(task.task_id, task.workspace_id):
+            log.warning("task_id=%s rejected because document/workspace scope is invalid", task.task_id)
+            return
         # 创建临时工作目录（Linux: /tmp/fish-worker/{task_id}, Windows: %TEMP%/fish-worker/{task_id}）
         tmp_root = os.path.join(tempfile.gettempdir(), "fish-worker", task.task_id)
         os.makedirs(tmp_root, exist_ok=True)
@@ -279,7 +283,8 @@ class IngestTask:
         声明实例只允许有这些属性，禁止动态添加属性
         类比 Java 的 final class + 固定字段（但更强：连 __dict__ 都不会创建）
     """
-    __slots__ = ("task_id", "minio_path", "workspace_id", "visibility", "user_id", "file_name", "file_size", "trace_id")
+    __slots__ = ("task_id", "minio_path", "workspace_id", "visibility", "user_id", "file_name", "file_size", "trace_id",
+                 "knowledge_base_id", "document_id", "operator_id", "created_by")
 
     def __init__(
         self,
@@ -292,6 +297,10 @@ class IngestTask:
         file_name: str,
         file_size: str | None = None,
         trace_id: str = "",
+        knowledge_base_id: str = "",
+        document_id: str = "",
+        operator_id: str = "",
+        created_by: str = "",
     ) -> None:
         self.task_id = task_id
         self.minio_path = minio_path
@@ -301,3 +310,7 @@ class IngestTask:
         self.file_name = file_name
         self.file_size = file_size
         self.trace_id = trace_id.strip() or task_id
+        self.knowledge_base_id = knowledge_base_id
+        self.document_id = document_id or task_id
+        self.operator_id = operator_id or user_id
+        self.created_by = created_by or user_id

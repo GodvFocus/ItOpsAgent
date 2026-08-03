@@ -1,6 +1,7 @@
 package com.ai.itops.rag.pipeline.recall;
 
 import com.ai.itops.auth.context.UserContextHolder;
+import com.ai.itops.security.permission.WorkspaceRecallSecurityService;
 import com.ai.itops.rag.config.MilvusProperties;
 import com.ai.itops.rag.config.RagProperties;
 import io.milvus.client.MilvusServiceClient;
@@ -25,6 +26,13 @@ import java.util.List;
 @Component
 @RequiredArgsConstructor
 public class UserKnowledgeMilvusSearcher implements RagRecall.DocumentSearcher {
+
+    private WorkspaceRecallSecurityService recallSecurityService;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setRecallSecurityService(WorkspaceRecallSecurityService recallSecurityService) {
+        this.recallSecurityService = recallSecurityService;
+    }
 
     private final MilvusServiceClient milvusClient;
     private final MilvusClientV2 milvusClientV2;
@@ -64,7 +72,7 @@ public class UserKnowledgeMilvusSearcher implements RagRecall.DocumentSearcher {
                             expr,
                             limit,
                             List.of("id", "content", "doc_id", "chunk_index", "doc_name", "authority"));
-                    return hits.stream().map(hit -> mapNativeHit(hit, RagRecall.RecallSource.TEXT)).toList();
+                    return secure(hits.stream().map(hit -> mapNativeHit(hit, RagRecall.RecallSource.TEXT)).toList());
                 } catch (Exception nativeError) {
                     log.warn("[UserKnowledgeMilvus] 原生 BM25 查询失败，回退到兼容路径: {}", nativeError.getMessage());
                 }
@@ -74,9 +82,9 @@ public class UserKnowledgeMilvusSearcher implements RagRecall.DocumentSearcher {
                     milvusClient, collection, expr, fields,
                     ragProperties.getRecall().getLexicalMaxScanRows(),
                     ragProperties.getRecall().getLexicalBatchSize());
-            return MilvusLexicalSearchSupport.rank(rows, subQueryText, limit,
+            return secure(MilvusLexicalSearchSupport.rank(rows, subQueryText, limit,
                     row -> MilvusHitMapper.fromQueryRow(row, RagRecall.RecallSource.TEXT),
-                    UserKnowledgeMilvusSearcher::searchableText);
+                    UserKnowledgeMilvusSearcher::searchableText));
         } catch (Exception e) {
             log.warn("[UserKnowledgeMilvus] 文本检索失败: {}", e.getMessage());
             return List.of();
@@ -134,7 +142,7 @@ public class UserKnowledgeMilvusSearcher implements RagRecall.DocumentSearcher {
                     .build();
             SearchResultsWrapper results = new SearchResultsWrapper(
                     milvusClient.search(search).getData().getResults());
-            return MilvusHitMapper.fromSearch(results, RagRecall.RecallSource.VECTOR);
+            return secure(MilvusHitMapper.fromSearch(results, RagRecall.RecallSource.VECTOR));
         } catch (Exception e) {
             log.warn("[UserKnowledgeMilvus] 向量检索失败: {}", e.getMessage());
             return List.of();
@@ -151,6 +159,13 @@ public class UserKnowledgeMilvusSearcher implements RagRecall.DocumentSearcher {
 
     private static String currentWorkspaceId() {
         return UserContextHolder.currentWorkspaceIdOrNull();
+    }
+
+    private List<RagRecall.RecallHit> secure(List<RagRecall.RecallHit> hits) {
+        if (recallSecurityService == null) {
+            return hits;
+        }
+        return recallSecurityService.filter(UserContextHolder.currentUserIdOrNull(), currentWorkspaceId(), hits);
     }
 
     private static String escape(String value) {
