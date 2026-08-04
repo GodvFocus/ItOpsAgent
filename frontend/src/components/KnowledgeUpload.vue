@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { ref, computed, onUnmounted } from 'vue'
+import { ref, computed, onUnmounted, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { Upload } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import type { UploadFile } from 'element-plus'
-import { useAuthStore } from '@/store/auth'
+import { useWorkspaceStore } from '@/store/workspace'
 import * as knowledgeApi from '@/api/knowledge'
 
 const props = defineProps<{
@@ -17,10 +17,9 @@ const emit = defineEmits<{
   ingestSuccess: []
 }>()
 
-const auth = useAuthStore()
-const { role } = storeToRefs(auth)
-
-const isAdmin = computed(() => (role.value ?? '').toUpperCase() === 'ADMIN')
+const workspace = useWorkspaceStore()
+const canUpload = computed(() => workspace.canManage('DOCUMENT_UPLOAD'))
+const { workspaceId } = storeToRefs(workspace)
 
 /** 小于等于此大小走直传（服务端流式写入，避免 JVM 堆占用） */
 const SMALL_FILE_LIMIT_BYTES = 1 * 1024 * 1024
@@ -41,6 +40,16 @@ function clearPoll() {
 }
 
 onUnmounted(() => clearPoll())
+
+watch(workspaceId, (nextId, previousId) => {
+  if (!previousId || nextId === previousId) return
+  // 切换 Workspace 后停止旧任务轮询，避免旧任务状态继续覆盖当前页面。
+  clearPoll()
+  isUploading.value = false
+  isProcessing.value = false
+  statusLine.value = ''
+  uploadProgress.value = 0
+})
 
 async function startPolling(taskId: string) {
   clearPoll()
@@ -126,7 +135,7 @@ async function uploadLargeFile(file: File, scope: 'private' | 'workspace') {
 }
 
 async function doUpload(file: File, scope: 'private' | 'workspace') {
-  if (props.disabled) return
+  if (props.disabled || !canUpload.value) return
   try {
     if (file.size <= SMALL_FILE_LIMIT_BYTES) {
       await uploadSmallFile(file, scope)
@@ -170,7 +179,7 @@ function onPublicFileChange(uploadFile: UploadFile) {
         </el-button>
       </el-upload>
       <el-upload
-        v-if="isAdmin"
+        v-if="canUpload"
         :show-file-list="false"
         :auto-upload="false"
         :disabled="disabled"

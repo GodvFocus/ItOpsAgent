@@ -8,6 +8,7 @@ import * as authApi from '@/api/auth'
 import { useDrawer } from '@/composables/useDrawer'
 import { useTheme } from '@/composables/useTheme'
 import { drawFishLogo } from '@/utils/fishLogo'
+import WorkspaceSelector from '@/components/WorkspaceSelector.vue'
 
 defineProps<{
   /** 是否显示返回按钮（知识库页用） */
@@ -74,6 +75,7 @@ function goEval() {
       </div>
     </div>
     <div class="right">
+      <WorkspaceSelector />
       <button class="icon-btn" :class="{ active: route.path === '/knowledge' }" title="知识库" @click="goKnowledge">
         <el-icon :size="16"><Collection /></el-icon>
       </button>

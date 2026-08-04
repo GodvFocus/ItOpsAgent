@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { LoginResponse } from '@/types/auth'
+import type { WorkspaceRole } from '@/types/workspace'
 
 const TOKEN_KEY = 'fish-agent-token'
 const NICKNAME_KEY = 'fish-agent-nickname'
@@ -23,19 +24,22 @@ export const useAuthStore = defineStore('auth', () => {
   const workspaceId = ref<string | null>(null)
   const nickname = ref<string | null>(readStoredNickname())
   const role = ref<string | null>(null)
+  const workspaceRole = ref<WorkspaceRole | null>(null)
 
   const isLoggedIn = computed(() => !!token.value)
 
   /**
    * 登录或注册成功后写入会话令牌。
    */
-  function setSession(t: string, uid: number, wid: string | null | undefined, nick: string | null | undefined, r: string) {
+  function setSession(t: string, uid: number, wid: string | null | undefined, nick: string | null | undefined,
+                      r: string, wr?: WorkspaceRole | null) {
     token.value = t
     userId.value = uid
     workspaceId.value = wid?.trim() || null
     const safeNick = (nick ?? '').trim()
     nickname.value = safeNick.length > 0 ? safeNick : null
     role.value = r
+    workspaceRole.value = wr ?? null
     localStorage.setItem(TOKEN_KEY, t)
     if (safeNick.length > 0) {
       localStorage.setItem(NICKNAME_KEY, safeNick)
@@ -53,6 +57,7 @@ export const useAuthStore = defineStore('auth', () => {
     const safeNick = (me.nickname ?? '').trim()
     nickname.value = safeNick.length > 0 ? safeNick : null
     role.value = me.role ?? null
+    workspaceRole.value = me.workspaceRole ?? null
     if (safeNick.length > 0) {
       localStorage.setItem(NICKNAME_KEY, safeNick)
     } else {
@@ -69,6 +74,7 @@ export const useAuthStore = defineStore('auth', () => {
     workspaceId.value = null
     nickname.value = null
     role.value = null
+    workspaceRole.value = null
     localStorage.removeItem(TOKEN_KEY)
     localStorage.removeItem(NICKNAME_KEY)
   }
@@ -80,5 +86,13 @@ export const useAuthStore = defineStore('auth', () => {
     return token.value ?? localStorage.getItem(TOKEN_KEY)
   }
 
-  return { token, userId, workspaceId, nickname, role, isLoggedIn, setSession, applyProfile, clearSession, getToken }
+  function setWorkspaceContext(wid: string, wr: WorkspaceRole): void {
+    workspaceId.value = wid.trim() || null
+    workspaceRole.value = wr
+  }
+
+  return {
+    token, userId, workspaceId, nickname, role, workspaceRole, isLoggedIn,
+    setSession, applyProfile, setWorkspaceContext, clearSession, getToken
+  }
 })

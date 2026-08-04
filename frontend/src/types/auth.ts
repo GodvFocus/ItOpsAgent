@@ -4,4 +4,7 @@ export interface LoginResponse {
   workspaceId: string
   nickname: string
   role: string
+  workspaceRole?: WorkspaceRole | null
 }
+
+import type { WorkspaceRole } from './workspace'

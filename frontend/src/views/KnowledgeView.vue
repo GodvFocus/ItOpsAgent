@@ -9,6 +9,7 @@ import { storeToRefs } from 'pinia'
 import { Refresh, View } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/store/auth'
+import { useWorkspaceStore } from '@/store/workspace'
 import * as knowledgeApi from '@/api/knowledge'
 import type { DocumentMetadataItem } from '@/api/knowledge'
 import KnowledgeUpload from '@/components/KnowledgeUpload.vue'
@@ -20,10 +21,14 @@ import { useResponsive } from '@/composables/useResponsive'
 const router = useRouter()
 const route = useRoute()
 const auth = useAuthStore()
+const workspace = useWorkspaceStore()
 const { role } = storeToRefs(auth)
+const { workspaceId } = storeToRefs(workspace)
 const { isMobile } = useResponsive()
 
 const isAdmin = computed(() => (role.value ?? '').toUpperCase() === 'ADMIN')
+const canDelete = computed(() => workspace.canManage('DOCUMENT_DELETE'))
+let loadGeneration = 0
 
 const activeTab = ref<'mine' | 'all'>('mine')
 const loading = ref(false)
@@ -36,12 +41,14 @@ const activeChunkTaskId = ref<string | null>(null)
 const focusChunkIndex = ref<number | null>(null)
 
 async function loadList() {
+  const generation = ++loadGeneration
   loading.value = true
   try {
     const data =
       isAdmin.value && activeTab.value === 'all'
         ? await knowledgeApi.listAllDocuments(page.value, pageSize.value)
         : await knowledgeApi.listMyDocuments(page.value, pageSize.value)
+    if (generation !== loadGeneration) return
     records.value = data.records
     total.value = data.total
   } catch (e) {
@@ -56,6 +63,13 @@ onMounted(async () => {
   openChunksFromRoute()
 })
 watch([page, pageSize], () => void loadList())
+watch(workspaceId, () => {
+  records.value = []
+  total.value = 0
+  page.value = 1
+  closeChunkDetail()
+  void loadList()
+})
 watch(() => route.query.openChunks, () => openChunksFromRoute())
 
 function onTabChange() {
@@ -188,7 +202,7 @@ function openCardFromChunk(cardId: number) {
               <el-icon><View /></el-icon>
               查看切片
             </el-button>
-            <el-button type="danger" link size="small" @click="onDelete(row)">删除</el-button>
+            <el-button v-if="canDelete" type="danger" link size="small" @click="onDelete(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -208,7 +222,7 @@ function openCardFromChunk(cardId: number) {
             <el-button v-if="row.status === 'SUCCESS'" type="primary" link size="small" @click="openChunkDetail(row.taskId)">
               查看切片
             </el-button>
-            <el-button type="danger" link size="small" @click="onDelete(row)">删除</el-button>
+            <el-button v-if="canDelete" type="danger" link size="small" @click="onDelete(row)">删除</el-button>
           </div>
         </div>
         <el-empty v-if="!loading && records.length === 0" description="暂无上传记录" />

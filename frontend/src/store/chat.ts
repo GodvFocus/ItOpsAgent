@@ -216,6 +216,15 @@ export const useChatStore = defineStore('chat', () => {
     streaming.value = false
   }
 
+  /** Workspace 切换后清除旧会话和检索上下文，避免跨 Workspace 残留展示。 */
+  function resetWorkspaceScope(): void {
+    cleanup()
+    sessions.value = []
+    activeSid.value = ''
+    messagesBySid.value = {}
+    errorMsg.value = ''
+  }
+
   return {
     sessions,
     activeSid,
@@ -230,6 +239,7 @@ export const useChatStore = defineStore('chat', () => {
     rename,
     send,
     cancel,
-    cleanup
+    cleanup,
+    resetWorkspaceScope
   }
 })

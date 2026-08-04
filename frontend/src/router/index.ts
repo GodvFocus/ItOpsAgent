@@ -6,6 +6,7 @@ const ChatView = () => import('@/views/ChatView.vue')
 const KnowledgeView = () => import('@/views/KnowledgeView.vue')
 const KnowledgeCardView = () => import('@/views/KnowledgeCardView.vue')
 const EvalDashboardView = () => import('@/views/EvalDashboardView.vue')
+const WorkspaceSettingsView = () => import('@/views/WorkspaceSettingsView.vue')
 
 const API_BASE = (import.meta.env.VITE_API_BASE ?? '').replace(/\/$/, '')
 
@@ -17,7 +18,8 @@ export const router = createRouter({
     { path: '/chat', name: 'chat', component: ChatView, meta: { keepAlive: true } },
     { path: '/knowledge', name: 'knowledge', component: KnowledgeView },
     { path: '/cards', name: 'cards', component: KnowledgeCardView, meta: { requiresAuth: true } },
-    { path: '/eval', name: 'eval', component: EvalDashboardView, meta: { requiresAuth: true } }
+    { path: '/eval', name: 'eval', component: EvalDashboardView, meta: { requiresAuth: true } },
+    { path: '/settings/workspace', name: 'workspace-settings', component: WorkspaceSettingsView, meta: { requiresAuth: true } }
   ]
 })
 

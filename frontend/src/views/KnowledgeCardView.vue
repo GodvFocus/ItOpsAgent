@@ -16,6 +16,8 @@ import CardRelationDiscovery from '@/components/CardRelationDiscovery.vue'
 import CardDetailPanel from '@/components/CardDetailPanel.vue'
 import CardCreateDialog from '@/components/CardCreateDialog.vue'
 import EmptyCardGuide from '@/components/EmptyCardGuide.vue'
+import { storeToRefs } from 'pinia'
+import { useWorkspaceStore } from '@/store/workspace'
 import {
   batchConfirmCards,
   batchRejectCards,
@@ -33,6 +35,9 @@ import {
 
 const router = useRouter()
 const route = useRoute()
+const workspace = useWorkspaceStore()
+const { workspaceId } = storeToRefs(workspace)
+let loadGeneration = 0
 
 function goChat() {
   void router.push('/chat')
@@ -90,6 +95,7 @@ function selectGroup(gId: number | null, gName?: string) {
 }
 
 async function loadCards() {
+  const generation = ++loadGeneration
   loading.value = true
   try {
     const [statData, pageData, treeData, reviewStats] = await Promise.all([
@@ -109,6 +115,7 @@ async function loadCards() {
       getCardGroups(),
       getReviewStats().catch(() => null)
     ])
+    if (generation !== loadGeneration) return
     stats.value = statData
     cards.value = pageData.records
     total.value = pageData.total
@@ -299,6 +306,14 @@ onMounted(async () => {
   openCardFromRoute()
 })
 watch([page, pageSize], () => void loadCards())
+watch(workspaceId, () => {
+  cards.value = []
+  total.value = 0
+  selectedIds.value = []
+  detailVisible.value = false
+  selectedCardId.value = null
+  void loadCards()
+})
 watch(() => route.query.openCard, () => openCardFromRoute())
 
 function openCardFromRoute() {
