@@ -83,12 +83,12 @@ public class KnowledgeController {
 
     @PostMapping(value = "/api/admin/knowledge/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public KnowledgeUploadResponse uploadAdmin(@RequestPart("file") MultipartFile file) throws Exception {
-        requireAdmin();
         Long uid = UserContextHolder.currentUserIdOrNull();
         if (uid == null) {
             throw new IllegalStateException("未登录");
         }
         String workspaceId = UserContextHolder.currentWorkspaceIdOrNull();
+        requireWorkspacePermission(uid, workspaceId, WorkspacePermission.DOCUMENT_UPLOAD);
         if (file == null || file.isEmpty()) {
             throw new IllegalArgumentException("请选择要上传的文件");
         }
@@ -114,12 +114,12 @@ public class KnowledgeController {
 
     @PostMapping(value = "/api/admin/knowledge/upload/init", consumes = MediaType.APPLICATION_JSON_VALUE)
     public MultipartInitResponse initMultipartAdmin(@RequestBody MultipartInitRequest req) throws Exception {
-        requireAdmin();
         Long uid = UserContextHolder.currentUserIdOrNull();
         if (uid == null) {
             throw new IllegalStateException("未登录");
         }
         String workspaceId = UserContextHolder.currentWorkspaceIdOrNull();
+        requireWorkspacePermission(uid, workspaceId, WorkspacePermission.DOCUMENT_UPLOAD);
         MultipartInitResult r = knowledgeIngestionService.initMultipartUpload(uid, req.getFileName(), req.getFileSize(),
                 req.getContentType(), workspaceId, DocumentMetadata.VISIBILITY_WORKSPACE,
                 "workspace/" + safeWorkspaceSegment(workspaceId) + "/shared/");
@@ -318,6 +318,13 @@ public class KnowledgeController {
         }
         String role = ctx.role();
         return role != null && UserRole.ADMIN.name().equalsIgnoreCase(role.trim());
+    }
+
+    private void requireWorkspacePermission(Long userId, String workspaceId, WorkspacePermission permission) {
+        if (permissionEvaluator == null) {
+            throw new IllegalStateException("Workspace 权限服务未就绪");
+        }
+        permissionEvaluator.checkWorkspacePermission(userId, workspaceId, permission);
     }
 
     private static void requireAdmin() {

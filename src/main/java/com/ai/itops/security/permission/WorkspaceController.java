@@ -6,6 +6,7 @@ import com.ai.itops.security.permission.dto.TransferOwnershipRequest;
 import com.ai.itops.security.permission.dto.UpdateWorkspaceMemberRoleRequest;
 import com.ai.itops.security.permission.dto.WorkspaceMemberResponse;
 import com.ai.itops.security.permission.dto.WorkspaceResponse;
+import com.ai.itops.auth.mapper.SysUserMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -26,6 +27,7 @@ public class WorkspaceController {
 
     private final WorkspaceService workspaceService;
     private final WorkspaceMemberService memberService;
+    private final SysUserMapper sysUserMapper;
 
     @PostMapping
     public WorkspaceResponse create(@RequestBody CreateWorkspaceRequest request) {
@@ -34,7 +36,9 @@ public class WorkspaceController {
 
     @GetMapping("/{workspaceId}/members")
     public List<WorkspaceMemberResponse> members(@PathVariable String workspaceId) {
-        return memberService.list(workspaceId).stream().map(WorkspaceMemberResponse::from).toList();
+        return memberService.list(workspaceId).stream()
+                .map(member -> WorkspaceMemberResponse.from(member, sysUserMapper.selectById(member.getUserId())))
+                .toList();
     }
 
     @PostMapping("/{workspaceId}/members")

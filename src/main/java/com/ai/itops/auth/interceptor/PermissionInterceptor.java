@@ -32,6 +32,9 @@ public class PermissionInterceptor implements HandlerInterceptor {
         if (!uri.startsWith("/api/admin/")) {
             return true;
         }
+        if (isWorkspaceKnowledgeEndpoint(uri)) {
+            return true;
+        }
         UserContext ctx = UserContextHolder.get();
         if (ctx == null) {
             sendForbidden(response, "未登录");
@@ -42,6 +45,12 @@ public class PermissionInterceptor implements HandlerInterceptor {
             return false;
         }
         return true;
+    }
+
+    /** Workspace 知识库接口由业务层 Workspace RBAC 校验，不能提前套用系统级 ADMIN。 */
+    private static boolean isWorkspaceKnowledgeEndpoint(String uri) {
+        return uri.startsWith("/api/admin/knowledge/upload")
+                || "/api/admin/knowledge/documents".equals(uri);
     }
 
     private void sendForbidden(HttpServletResponse response, String message) throws Exception {
