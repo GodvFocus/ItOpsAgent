@@ -8,5 +8,11 @@ package com.ai.itops.auth.context;
  * @param nickname 展示昵称
  * @param role     角色枚举名（如 USER）
  */
-public record UserContext(Long userId, String workspaceId, String username, String nickname, String role) {
+public record UserContext(Long userId, String workspaceId, String username, String nickname, String role,
+                          String workspaceRole) {
+
+    /** 兼容历史 Redis Session，旧会话没有 workspaceRole 时由业务层重新查询成员关系。 */
+    public UserContext(Long userId, String workspaceId, String username, String nickname, String role) {
+        this(userId, workspaceId, username, nickname, role, null);
+    }
 }

@@ -75,4 +75,18 @@ public class WorkspaceService {
             workspaceMemberMapper.insert(viewer);
         }
     }
+
+    /** 查询登录时使用的当前 Workspace 角色；无有效 membership 时返回 null。 */
+    public String findActiveRole(Long userId, String workspaceId) {
+        if (userId == null || workspaceId == null || workspaceId.isBlank()) {
+            return null;
+        }
+        Workspace workspace = workspaceMapper.selectById(workspaceId.trim());
+        WorkspaceMember member = workspaceMemberMapper.selectByWorkspaceAndUser(workspaceId.trim(), userId);
+        if (workspace == null || !"ACTIVE".equalsIgnoreCase(workspace.getStatus())
+                || member == null || member.getStatus() != MemberStatus.ACTIVE || member.getRole() == null) {
+            return null;
+        }
+        return member.getRole().name();
+    }
 }

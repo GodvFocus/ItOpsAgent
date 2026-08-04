@@ -7,9 +7,16 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
+import java.util.List;
+
 /** Workspace 数据访问，更新所有者时使用数据库行锁。 */
 @Mapper
 public interface WorkspaceMapper extends BaseMapper<Workspace> {
+
+    @Select("SELECT w.* FROM workspace w JOIN workspace_member wm ON wm.workspace_id = w.id "
+            + "WHERE wm.user_id = #{userId} AND wm.status = 'ACTIVE' AND w.status = 'ACTIVE' "
+            + "ORDER BY w.updated_at DESC, w.id ASC")
+    List<Workspace> selectActiveByUserId(@Param("userId") Long userId);
 
     @Select("SELECT * FROM workspace WHERE id = #{workspaceId} FOR UPDATE")
     Workspace selectByIdForUpdate(@Param("workspaceId") String workspaceId);

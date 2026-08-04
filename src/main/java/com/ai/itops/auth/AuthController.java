@@ -7,6 +7,9 @@ import com.ai.itops.auth.dto.LoginRequest;
 import com.ai.itops.auth.dto.LoginResponse;
 import com.ai.itops.auth.dto.RegisterRequest;
 import com.ai.itops.auth.AuthService;
+import com.ai.itops.security.permission.WorkspaceSessionService;
+import com.ai.itops.security.permission.dto.WorkspaceSummaryResponse;
+import com.ai.itops.security.permission.dto.WorkspaceSwitchResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -25,6 +28,7 @@ import java.util.Map;
 public class AuthController {
 
     private final AuthService authService;
+    private final WorkspaceSessionService workspaceSessionService;
 
     /**
      * 用户注册。
@@ -71,6 +75,28 @@ public class AuthController {
         if (nick == null || nick.isBlank()) {
             nick = c.username();
         }
-        return new LoginResponse(null, c.userId(), c.workspaceId(), nick, c.role());
+        return new LoginResponse(null, c.userId(), c.workspaceId(), nick, c.role(), c.workspaceRole());
+    }
+
+    /** 返回当前用户可切换的 ACTIVE Workspace，列表不接受前端身份字段。 */
+    @GetMapping("/workspaces")
+    public java.util.List<WorkspaceSummaryResponse> workspaces() {
+        return workspaceSessionService.listForUser(UserContextHolder.currentUserIdOrNull());
+    }
+
+    /** 返回 Session 当前 Workspace 的最小渲染信息。 */
+    @GetMapping("/workspaces/current")
+    public WorkspaceSwitchResponse currentWorkspace() {
+        var context = UserContextHolder.get();
+        return workspaceSessionService.current(context == null ? null : context.userId(),
+                context == null ? null : context.workspaceId());
+    }
+
+    /** 只允许切换到当前用户 ACTIVE membership 所属的 ACTIVE Workspace。 */
+    @PostMapping("/workspaces/{workspaceId}/switch")
+    public WorkspaceSwitchResponse switchWorkspace(@PathVariable String workspaceId,
+                                                    HttpServletRequest request) {
+        String token = request.getHeader(GlobalAuthInterceptor.HEADER_AUTH_TOKEN);
+        return workspaceSessionService.switchWorkspace(token, workspaceId);
     }
 }

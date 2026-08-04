@@ -3,6 +3,7 @@ package com.ai.itops.auth.session;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ai.itops.auth.context.UserContext;
+import com.ai.itops.security.permission.WorkspaceRole;
 import com.ai.itops.auth.config.AuthProperties;
 import com.ai.itops.common.redis.RedisKeys;
 import lombok.RequiredArgsConstructor;
@@ -63,6 +64,20 @@ public class RedisSessionManager {
         } catch (JsonProcessingException e) {
             log.warn("[RedisSession] JSON 反序列化失败: {}", e.getMessage());
             return Optional.empty();
+        }
+    }
+
+    /** 更新当前 Workspace，只替换 Workspace 字段，保留原有登录身份和系统角色。 */
+    public UserContext updateWorkspace(String token, String workspaceId, WorkspaceRole workspaceRole) {
+        UserContext current = getSession(token)
+                .orElseThrow(() -> new IllegalStateException("未登录或会话已过期"));
+        UserContext updated = new UserContext(current.userId(), workspaceId, current.username(),
+                current.nickname(), current.role(), workspaceRole == null ? null : workspaceRole.name());
+        try {
+            stringRedisTemplate.opsForValue().set(sessionKey(token), objectMapper.writeValueAsString(updated), ttl());
+            return updated;
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("session serialize failed", e);
         }
     }
 

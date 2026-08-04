@@ -107,9 +107,12 @@ public class AuthService {
         }
         String nick = resolveDisplayNickname(u);
         String workspaceId = resolveWorkspaceId();
-        UserContext ctx = new UserContext(u.getId(), workspaceId, u.getUsername(), nick, u.getRole());
+        String workspaceRole = workspaceService == null
+                ? null
+                : workspaceService.findActiveRole(u.getId(), workspaceId);
+        UserContext ctx = new UserContext(u.getId(), workspaceId, u.getUsername(), nick, u.getRole(), workspaceRole);
         String token = redisSessionManager.createSession(ctx);
-        return new LoginResponse(token, u.getId(), workspaceId, nick, u.getRole());
+        return new LoginResponse(token, u.getId(), workspaceId, nick, u.getRole(), workspaceRole);
     }
 
     /** 展示用昵称：库中为空时退回用户名，避免前端拿到 null。 */

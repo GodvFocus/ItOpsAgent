@@ -21,4 +21,7 @@ public class LoginResponse {
     private String nickname;
 
     private String role;
+
+    /** 当前 Workspace 内的角色，与系统级 role 分开维护。 */
+    private String workspaceRole;
 }
