@@ -22,6 +22,15 @@ fish:
       api-key: <your-bocha-api-key>
     amap:
       key: <your-amap-key>
+    confluence:
+      # Confluence 默认关闭；准备好后再填写并改为 true。
+      enabled: false
+      base-url: ""
+      auth-type: BEARER
+      token: ""
+      username: ""
+      password: ""
+      space-keys: ""
   rustfs:
     access-key: <your-rustfs-access-key>
     secret-key: <your-rustfs-secret-key>

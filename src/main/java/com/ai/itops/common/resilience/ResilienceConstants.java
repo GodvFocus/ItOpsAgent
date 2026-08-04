@@ -22,6 +22,9 @@ public final class ResilienceConstants {
     /** DashScope Reranker 精排熔断器。 */
     public static final String CB_RERANK = "rerank";
 
+    /** Confluence 历史方案查询熔断器。 */
+    public static final String CB_CONFLUENCE = "confluence";
+
     /** LLM 熔断时推给前端的固定降级文案。 */
     public static final String LLM_FALLBACK_MESSAGE = "服务暂时繁忙，请稍后再试";
 }

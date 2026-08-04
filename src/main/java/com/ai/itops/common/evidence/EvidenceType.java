@@ -17,6 +17,9 @@ public enum EvidenceType {
     /** 工单或类似记录。 */
     TICKET,
 
+    /** Confluence 历史方案或页面正文。 */
+    CONFLUENCE,
+
     /** 无法进一步拆分的工具结果。 */
     TOOL_RESULT
 }

@@ -180,12 +180,17 @@ public class EvidenceRegistry {
             if (label.isBlank()) {
                 label = toolName;
             }
-            String snippet = firstText(object, "message", "summary", "detail", "content", "title");
+            String snippet = firstText(object, "message", "summary", "detail", "content", "snippet", "excerpt", "title");
             if (snippet.isBlank()) {
                 snippet = object.toString();
             }
-            Evidence evidence = register(turnId, type, sourceId, label, snippet,
-                    Map.of("tool", toolName, "field", field));
+            Map<String, String> metadata = new LinkedHashMap<>();
+            metadata.put("tool", toolName);
+            metadata.put("field", field);
+            putMetadata(object, metadata, "url");
+            putMetadata(object, metadata, "spaceName");
+            putMetadata(object, metadata, "docId");
+            Evidence evidence = register(turnId, type, sourceId, label, snippet, metadata);
             object.put("evidenceId", evidence.evidenceId());
             changed = true;
             index++;
@@ -201,10 +206,20 @@ public class EvidenceRegistry {
         if (normalized.contains("knowledge") || normalized.contains("rag")) {
             return EvidenceType.RAG;
         }
+        if (normalized.contains("confluence")) {
+            return EvidenceType.CONFLUENCE;
+        }
         if (normalized.contains("ticket") || field.contains("ticket")) {
             return EvidenceType.TICKET;
         }
         return EvidenceType.TOOL_RESULT;
+    }
+
+    private void putMetadata(ObjectNode object, Map<String, String> metadata, String field) {
+        String value = firstText(object, field);
+        if (!value.isBlank()) {
+            metadata.put(field, value);
+        }
     }
 
     private String firstText(ObjectNode object, String... fields) {

@@ -46,4 +46,22 @@ class EvidenceRegistryTest {
         assertThatThrownBy(() -> evidence.metadata().put("x", "y"))
                 .isInstanceOf(UnsupportedOperationException.class);
     }
+
+    @Test
+    void shouldRegisterConfluenceUrlAndMapConfluenceEvidence() throws Exception {
+        registry.startTurn("turn-confluence");
+        String enriched = registry.registerToolResult("turn-confluence", "confluence_search_tool", """
+                {"ok":true,"hits":[{"id":"123","title":"Redis 排障方案","spaceName":"OPS","snippet":"检查连接池","url":"https://confluence.example/pages/123"}]}
+                """);
+        JsonNode root = new ObjectMapper().readTree(enriched);
+
+        assertThat(root.path("hits").get(0).path("evidenceId").asText()).isEqualTo("E1");
+        Evidence evidence = registry.find("turn-confluence", "E1");
+        assertThat(evidence.type()).isEqualTo(EvidenceType.CONFLUENCE);
+        assertThat(evidence.metadata()).containsEntry("url", "https://confluence.example/pages/123");
+        assertThat(com.ai.itops.chat.dto.SourceRef.from(evidence).kind())
+                .isEqualTo(com.ai.itops.chat.dto.SourceRef.Kind.CONFLUENCE);
+        assertThat(com.ai.itops.chat.dto.SourceRef.from(evidence).url())
+                .isEqualTo("https://confluence.example/pages/123");
+    }
 }

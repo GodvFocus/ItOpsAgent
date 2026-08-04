@@ -30,7 +30,9 @@ public class ToolProperties {
     private Map<String, Integer> overrides = new HashMap<>(Map.of(
             "web_fetch", 6000,
             "file_read", 8000,
-            "web_search", 3000
+            "web_search", 3000,
+            "confluence_search_tool", 4000,
+            "confluence_fetch_tool", 12000
     ));
 
     /**
@@ -42,6 +44,8 @@ public class ToolProperties {
                     "knowledge_search_tool",
                     "log_search_tool",
                     "service_status_tool",
+                    "confluence_search_tool",
+                    "confluence_fetch_tool",
                     "search_large_result")
     ));
 

@@ -23,11 +23,24 @@ public record SourceRef(
         String snippet,
         boolean memory,
         String timeText,
-        String evidenceId
+        String evidenceId,
+        String url
 ) {
 
+    /** 保留旧调用方构造方式，新增 URL 默认为空。 */
+    public SourceRef(String label,
+                     Kind kind,
+                     String docId,
+                     Integer chunkIndex,
+                     String snippet,
+                     boolean memory,
+                     String timeText,
+                     String evidenceId) {
+        this(label, kind, docId, chunkIndex, snippet, memory, timeText, evidenceId, "");
+    }
+
     public enum Kind {
-        MEMORY, DOC, CARD, PUBLIC, LOG, STATUS, TICKET, TOOL
+        MEMORY, DOC, CARD, PUBLIC, LOG, STATUS, TICKET, CONFLUENCE, TOOL
     }
 
     private static final int SNIPPET_MAX = 100;
@@ -76,6 +89,7 @@ public record SourceRef(
             case LOG -> Kind.LOG;
             case STATUS_SNAPSHOT -> Kind.STATUS;
             case TICKET -> Kind.TICKET;
+            case CONFLUENCE -> Kind.CONFLUENCE;
             case TOOL_RESULT -> Kind.TOOL;
         };
         boolean memory = "记忆".equals(evidence.metadata().get("sourceLabel"));
@@ -87,7 +101,8 @@ public record SourceRef(
                 snippet(evidence.snippet()),
                 memory,
                 evidence.metadata().getOrDefault("timeText", ""),
-                evidence.evidenceId());
+                evidence.evidenceId(),
+                evidence.metadata().getOrDefault("url", ""));
     }
 
     private static Kind kindFromRag(Evidence evidence) {

@@ -27,13 +27,14 @@ export interface ChatMessage {
  */
 export interface SourceRef {
   label: string
-  kind?: 'MEMORY' | 'DOC' | 'CARD' | 'PUBLIC'
+  kind?: 'MEMORY' | 'DOC' | 'CARD' | 'PUBLIC' | 'LOG' | 'STATUS' | 'TICKET' | 'CONFLUENCE' | 'TOOL'
   docId?: string | null
   chunkIndex?: number | null
   snippet: string
   memory: boolean
   timeText: string
   evidenceId?: string
+  url?: string
 }
 
 export interface StructuredAnswerJudgement {

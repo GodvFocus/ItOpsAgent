@@ -55,7 +55,9 @@ public class TroubleshootingSecurityGuard {
     private static final Set<String> TROUBLESHOOTING_TOOLS = Set.of(
             "knowledge_search_tool",
             "service_status_tool",
-            "log_search_tool"
+            "log_search_tool",
+            "confluence_search_tool",
+            "confluence_fetch_tool"
     );
     private static final Set<String> HIGH_RISK_FIELDS = Set.of(
             "workspaceid",
@@ -83,7 +85,9 @@ public class TroubleshootingSecurityGuard {
     private static final Map<String, Set<String>> ALLOWED_FIELDS = Map.of(
             "knowledge_search_tool", Set.of("query", "serviceName", "startTime", "endTime", "limit"),
             "service_status_tool", Set.of("serviceName", "environment", "startTime", "endTime", "limit"),
-            "log_search_tool", Set.of("query", "serviceName", "level", "startTime", "endTime", "limit")
+            "log_search_tool", Set.of("query", "serviceName", "level", "startTime", "endTime", "limit"),
+            "confluence_search_tool", Set.of("query", "spaceKey", "limit"),
+            "confluence_fetch_tool", Set.of("contentId")
     );
 
     private final ObjectMapper objectMapper = new ObjectMapper();

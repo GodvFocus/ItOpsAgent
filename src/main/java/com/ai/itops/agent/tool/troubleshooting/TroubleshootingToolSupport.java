@@ -75,18 +75,28 @@ public class TroubleshootingToolSupport {
                          Supplier<T> supplier,
                          Function<T, String> summaryFn,
                          Function<String, T> errorFactory) {
+        return execute(toolName, request, properties.getTimeoutMs(), supplier, summaryFn, errorFactory);
+    }
+
+    /** 使用调用方指定的超时执行工具，保留统一审计和降级行为。 */
+    public <T> T execute(String toolName,
+                         Object request,
+                         long timeoutMs,
+                         Supplier<T> supplier,
+                         Function<T, String> summaryFn,
+                         Function<String, T> errorFactory) {
         long startNs = System.nanoTime();
         String turnId = TraceContext.currentTurnId();
         try {
             T result = CompletableFuture.supplyAsync(supplier, executor)
-                    .orTimeout(Math.max(1L, properties.getTimeoutMs()), TimeUnit.MILLISECONDS)
+                    .orTimeout(Math.max(1L, timeoutMs), TimeUnit.MILLISECONDS)
                     .join();
             recordAudit(turnId, toolName, request, true, elapsedMs(startNs), safeSummary(summaryFn, result));
             return result;
         } catch (CompletionException e) {
             Throwable cause = e.getCause() == null ? e : e.getCause();
             String message = cause instanceof TimeoutException
-                    ? "timeout after " + properties.getTimeoutMs() + "ms"
+                    ? "timeout after " + timeoutMs + "ms"
                     : cause.getMessage();
             T fallback = errorFactory.apply(message == null ? "tool execution failed" : message);
             recordAudit(turnId, toolName, request, false, elapsedMs(startNs), message);

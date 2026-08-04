@@ -169,6 +169,10 @@ resilience4j:
         base-config: default
         slow-call-duration-threshold: 5s
         wait-duration-in-open-state: 30s
+      confluence:
+        base-config: default
+        slow-call-duration-threshold: 5s
+        wait-duration-in-open-state: 30s
 
 # ═══════════════════════════════════════════════════════════════
 # Fish-Agent 业务配置
@@ -375,11 +379,15 @@ fish:
         - knowledge_search_tool
         - log_search_tool
         - service_status_tool
+        - confluence_search_tool
+        - confluence_fetch_tool
         - search_large_result
     overrides:
       web_fetch: 6000
       file_read: 8000
       web_search: 3000
+      confluence_search_tool: 4000
+      confluence_fetch_tool: 12000
     # Tavily 搜索：https://docs.tavily.com/documentation/api-reference/endpoint/search
     tavily:
       api-key: ${TAVILY_API_KEY:}
@@ -402,6 +410,20 @@ fish:
       max-limit: ${FISH_TROUBLESHOOTING_TOOLS_MAX_LIMIT:10}
       default-lookback-hours: ${FISH_TROUBLESHOOTING_TOOLS_DEFAULT_LOOKBACK_HOURS:168}
       max-window-hours: ${FISH_TROUBLESHOOTING_TOOLS_MAX_WINDOW_HOURS:720}
+    # Confluence 只用于复杂排障路径的历史方案查询，默认关闭。
+    confluence:
+      enabled: ${FISH_CONFLUENCE_ENABLED:false}
+      base-url: ${FISH_CONFLUENCE_BASE_URL:}
+      auth-type: ${FISH_CONFLUENCE_AUTH_TYPE:BEARER}
+      token: ${FISH_CONFLUENCE_TOKEN:}
+      username: ${FISH_CONFLUENCE_USERNAME:}
+      password: ${FISH_CONFLUENCE_PASSWORD:}
+      space-keys: ${FISH_CONFLUENCE_SPACE_KEYS:}
+      default-search-limit: ${FISH_CONFLUENCE_DEFAULT_SEARCH_LIMIT:5}
+      max-search-limit: ${FISH_CONFLUENCE_MAX_SEARCH_LIMIT:10}
+      timeout-ms: ${FISH_CONFLUENCE_TIMEOUT_MS:3000}
+      max-content-chars: ${FISH_CONFLUENCE_MAX_CONTENT_CHARS:12000}
+      max-query-chars: ${FISH_CONFLUENCE_MAX_QUERY_CHARS:512}
 
   # ── RustFS 对象存储（S3 兼容） ──────────────────────────────
   rustfs:

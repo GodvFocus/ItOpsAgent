@@ -112,6 +112,7 @@ function evidenceKindLabel(kind?: SourceRef['kind']): string {
     DOC: '笔记',
     CARD: '卡片',
     PUBLIC: '公开',
+    CONFLUENCE: 'Confluence',
     MEMORY: '记忆'
   }
   return map[kind ?? 'DOC'] || '证据'
@@ -312,6 +313,15 @@ function itemText(item: StructuredAnswerItem | StructuredAnswerStep): string {
               </div>
               <div class="evidence-label">{{ activeEvidence.label }}</div>
               <div class="evidence-snippet">{{ activeEvidence.snippet || '暂无片段预览' }}</div>
+              <a
+                v-if="activeEvidence.url"
+                class="evidence-url"
+                :href="activeEvidence.url"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                打开来源页面
+              </a>
             </div>
           </section>
         </div>
