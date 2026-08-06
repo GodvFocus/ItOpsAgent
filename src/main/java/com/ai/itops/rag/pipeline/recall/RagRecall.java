@@ -14,6 +14,7 @@ import com.ai.itops.common.resilience.CircuitBreakerHelper;
 import com.ai.itops.common.resilience.ResilienceConstants;
 import com.ai.itops.common.trace.MdcAsync;
 import com.ai.itops.rag.config.KnowledgeProperties;
+import com.ai.itops.rag.config.MilvusProperties;
 import com.ai.itops.rag.config.RagProperties;
 import com.ai.itops.rag.pipeline.rerank.RagReranker;
 import com.ai.itops.rag.tracing.RagQualityLogger;
@@ -216,6 +217,57 @@ public final class RagRecall {
                 ChatMetrics chatMetrics,
                 CardRelationMapper cardRelationMapper,
                 KnowledgeCardMapper knowledgeCardMapper) {
+            this(ragProperties, knowledgeProperties, queryRewriter, subQueryExpander,
+                    userMemorySearcher, userKnowledgeSearcher, userKnowledgeCardSearcher, publicKnowledgeSearcher,
+                    recallExecutor, reranker, hydeService, qualityLogger, circuitBreakerHelper, chatMetrics,
+                    cardRelationMapper, knowledgeCardMapper, null, null);
+        }
+
+        public DefaultAugmentation(
+                RagProperties ragProperties,
+                KnowledgeProperties knowledgeProperties,
+                RagQueryRewrite.QueryRewriter queryRewriter,
+                RagQueryExpand.SubQueryExpander subQueryExpander,
+                DocumentSearcher userMemorySearcher,
+                DocumentSearcher userKnowledgeSearcher,
+                DocumentSearcher userKnowledgeCardSearcher,
+                DocumentSearcher publicKnowledgeSearcher,
+                @Qualifier("ragRecallExecutor") ExecutorService recallExecutor,
+                RagReranker reranker,
+                RagHydeService hydeService,
+                RagQualityLogger qualityLogger,
+                CircuitBreakerHelper circuitBreakerHelper,
+                ChatMetrics chatMetrics,
+                CardRelationMapper cardRelationMapper,
+                KnowledgeCardMapper knowledgeCardMapper,
+                ObjectProvider<io.milvus.client.MilvusServiceClient> milvusProvider,
+                MilvusProperties milvusProperties) {
+            this(ragProperties, knowledgeProperties, queryRewriter, subQueryExpander,
+                    userMemorySearcher, userKnowledgeSearcher, userKnowledgeCardSearcher, publicKnowledgeSearcher,
+                    recallExecutor, reranker, hydeService, qualityLogger, circuitBreakerHelper, chatMetrics,
+                    cardRelationMapper, knowledgeCardMapper, milvusProvider, null, milvusProperties);
+        }
+
+        public DefaultAugmentation(
+                RagProperties ragProperties,
+                KnowledgeProperties knowledgeProperties,
+                RagQueryRewrite.QueryRewriter queryRewriter,
+                RagQueryExpand.SubQueryExpander subQueryExpander,
+                DocumentSearcher userMemorySearcher,
+                DocumentSearcher userKnowledgeSearcher,
+                DocumentSearcher userKnowledgeCardSearcher,
+                DocumentSearcher publicKnowledgeSearcher,
+                @Qualifier("ragRecallExecutor") ExecutorService recallExecutor,
+                RagReranker reranker,
+                RagHydeService hydeService,
+                RagQualityLogger qualityLogger,
+                CircuitBreakerHelper circuitBreakerHelper,
+                ChatMetrics chatMetrics,
+                CardRelationMapper cardRelationMapper,
+                KnowledgeCardMapper knowledgeCardMapper,
+                ObjectProvider<io.milvus.client.MilvusServiceClient> milvusProvider,
+                ObjectProvider<io.milvus.v2.client.MilvusClientV2> milvusV2Provider,
+                MilvusProperties milvusProperties) {
             this.ragProperties = ragProperties;
             this.queryRewriter = queryRewriter;
             this.subQueryExpander = subQueryExpander;
@@ -230,7 +282,8 @@ public final class RagRecall {
             this.circuitBreakerHelper = circuitBreakerHelper;
             this.chatMetrics = chatMetrics;
             this.provenanceBooster = new ProvenanceBooster(ragProperties);
-            this.contextExpander = new ContextExpander(ragProperties, knowledgeProperties);
+            this.contextExpander = new ContextExpander(ragProperties, knowledgeProperties,
+                    milvusProvider, milvusV2Provider, milvusProperties);
             this.cardGraphExpander = new CardGraphExpander(cardRelationMapper, knowledgeCardMapper);
         }
 

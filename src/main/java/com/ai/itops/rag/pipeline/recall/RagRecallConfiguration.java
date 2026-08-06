@@ -7,6 +7,7 @@ import com.ai.itops.common.metrics.ChatMetrics;
 import com.ai.itops.common.resilience.CircuitBreakerHelper;
 import com.ai.itops.common.trace.PromptTraceSupport;
 import com.ai.itops.rag.config.KnowledgeProperties;
+import com.ai.itops.rag.config.MilvusProperties;
 import com.ai.itops.rag.config.RagProperties;
 import com.ai.itops.card.mapper.CardRelationMapper;
 import com.ai.itops.card.mapper.KnowledgeCardMapper;
@@ -65,7 +66,10 @@ public class RagRecallConfiguration {
             CircuitBreakerHelper circuitBreakerHelper,
             ChatMetrics chatMetrics,
             CardRelationMapper cardRelationMapper,
-            KnowledgeCardMapper knowledgeCardMapper) {
+            KnowledgeCardMapper knowledgeCardMapper,
+            ObjectProvider<io.milvus.client.MilvusServiceClient> milvusClientProvider,
+            ObjectProvider<io.milvus.v2.client.MilvusClientV2> milvusClientV2Provider,
+            MilvusProperties milvusProperties) {
         return new RagRecall.DefaultAugmentation(
                 ragProperties,
                 knowledgeProperties,
@@ -82,6 +86,9 @@ public class RagRecallConfiguration {
                 circuitBreakerHelper,
                 chatMetrics,
                 cardRelationMapper,
-                knowledgeCardMapper);
+                knowledgeCardMapper,
+                milvusClientProvider,
+                milvusClientV2Provider,
+                milvusProperties);
     }
 }

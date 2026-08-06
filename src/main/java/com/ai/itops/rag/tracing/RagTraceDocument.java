@@ -1,7 +1,9 @@
 package com.ai.itops.rag.tracing;
 
 import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler;
 import lombok.Data;
 
 import java.util.List;
@@ -13,7 +15,7 @@ import java.util.List;
  * 表名由 {@code @TableName} 指定，主键为 {@code trace_id}。</p>
  */
 @Data
-@TableName("itops_rag_trace")
+@TableName(value = "itops_rag_trace", autoResultMap = true)
 public class RagTraceDocument {
 
     @TableId
@@ -27,6 +29,7 @@ public class RagTraceDocument {
 
     private String rewrittenQuery;
 
+    @TableField(typeHandler = JacksonTypeHandler.class)
     private List<String> expandedQueries;
 
     private int recallTotalHits;
@@ -60,6 +63,7 @@ public class RagTraceDocument {
     private long createdAt;
 
     /** 本轮真正注入上下文的事实明细（id / 来源标签 / 分数），用于 per-fact 可观测与离线评估。 */
+    @TableField(typeHandler = JacksonTypeHandler.class)
     private List<InjectedFact> injectedFacts;
 
     /** 单条注入事实的溯源记录。 */

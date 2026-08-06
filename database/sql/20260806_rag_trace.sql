@@ -1,0 +1,28 @@
+-- RAG 质量追踪表：与主业务链路解耦，写入失败时 Java 侧仍会降级到文件日志。
+CREATE TABLE IF NOT EXISTS `itops_rag_trace` (
+  `trace_id`              VARCHAR(64)  NOT NULL,
+  `user_id`               VARCHAR(64)           DEFAULT NULL,
+  `session_id`            VARCHAR(128)         DEFAULT NULL,
+  `original_query`        TEXT,
+  `rewritten_query`       TEXT,
+  `expanded_queries`      JSON,
+  `recall_total_hits`     INT          NOT NULL DEFAULT 0,
+  `recall_deduped_hits`   INT          NOT NULL DEFAULT 0,
+  `fusion_top_n`          INT          NOT NULL DEFAULT 0,
+  `rerank_input_count`    INT          NOT NULL DEFAULT 0,
+  `rerank_top_score`      DOUBLE       NOT NULL DEFAULT 0,
+  `rerank_lowest_score`   DOUBLE       NOT NULL DEFAULT 0,
+  `hyde_used`             BOOLEAN      NOT NULL DEFAULT FALSE,
+  `injected_fact_count`   INT          NOT NULL DEFAULT 0,
+  `injected_total_chars`  INT          NOT NULL DEFAULT 0,
+  `recall_latency_ms`     BIGINT       NOT NULL DEFAULT 0,
+  `rerank_latency_ms`     BIGINT       NOT NULL DEFAULT 0,
+  `provenance_latency_ms` BIGINT       NOT NULL DEFAULT 0,
+  `expand_latency_ms`     BIGINT       NOT NULL DEFAULT 0,
+  `total_latency_ms`      BIGINT       NOT NULL DEFAULT 0,
+  `created_at`            BIGINT       NOT NULL,
+  `injected_facts`        JSON,
+  PRIMARY KEY (`trace_id`),
+  KEY `idx_rag_trace_user_created` (`user_id`, `created_at`),
+  KEY `idx_rag_trace_session_created` (`session_id`, `created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='RAG 检索质量追踪';

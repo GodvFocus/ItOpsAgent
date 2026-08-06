@@ -1,13 +1,14 @@
 package com.ai.itops.rag.tracing;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ai.itops.common.trace.MdcAsync;
 import com.ai.itops.rag.config.RagProperties;
 import com.ai.itops.rag.pipeline.recall.RagRecall;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.ObjectProvider;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -21,10 +22,7 @@ import java.util.concurrent.ThreadLocalRandom;
  * RAG 检索质量日志写入器。
  *
  * <p>采样、异步写入和失败降级都收敛在这里，召回编排只负责上报指标对象。
- * 原为 ES 写入，在 ES → Milvus 迁移中改为文件存储。
- *
- * TODO: 后续改为通过 MyBatis-Plus Mapper 写入 MySQL 表 itops_rag_trace，
- *       实现结构化的 RAG 质量追踪查询与报表。</p>
+ * 原为 ES 写入，当前优先写入 MySQL；数据库不可用时保留文件降级，避免质量追踪影响主对话链路。</p>
  */
 @Slf4j
 @Component
@@ -32,6 +30,7 @@ import java.util.concurrent.ThreadLocalRandom;
 public class RagQualityLogger {
 
     private final RagProperties ragProperties;
+    private final ObjectProvider<RagTraceMapper> mapperProvider;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @PostConstruct
@@ -81,7 +80,17 @@ public class RagQualityLogger {
 
     private void doSave(String storageDir, RagTraceDocument trace) {
         try {
+            RagTraceMapper mapper = mapperProvider.getIfAvailable();
+            if (mapper != null) {
+                mapper.insert(trace);
+                return;
+            }
+        } catch (Exception e) {
+            log.warn("[RagQualityLogger] MySQL 写入失败，降级为文件 traceId={}: {}", trace.getTraceId(), e.getMessage());
+        }
+        try {
             Path file = Paths.get(storageDir, trace.getTraceId() + ".json");
+            Files.createDirectories(file.getParent());
             objectMapper.writeValue(file.toFile(), trace);
         } catch (Exception e) {
             log.warn("[RagQualityLogger] 写入 RAG 追踪日志失败 traceId={}: {}", trace.getTraceId(), e.getMessage());

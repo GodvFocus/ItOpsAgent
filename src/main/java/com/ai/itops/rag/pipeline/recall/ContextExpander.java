@@ -1,8 +1,12 @@
 package com.ai.itops.rag.pipeline.recall;
 
 import com.ai.itops.rag.config.KnowledgeProperties;
+import com.ai.itops.rag.config.MilvusProperties;
 import com.ai.itops.rag.config.RagProperties;
+import com.ai.itops.auth.context.UserContextHolder;
+import io.milvus.client.MilvusServiceClient;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
 
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -15,29 +19,104 @@ import java.util.Map;
  * <p>检索排序仍只看中心命中；扩展阶段只把同一文档前后 N 个 chunk 拼回渲染内容，缓解答案缺少上下文的问题。
  * 对话记忆和知识卡片没有稳定 chunk 坐标，默认跳过。</p>
  *
- * <p>TODO: ES → Milvus 迁移后邻块扩展暂不可用，等待 Milvus Collection 建立 chunk 级索引后恢复。</p>
+ * <p>邻块通过 Milvus 的标量条件按文档和 chunk 坐标读取，不改变中心命中的排序分数。</p>
  */
 @Slf4j
 public class ContextExpander {
 
     private final RagProperties ragProperties;
+    private final ObjectProvider<MilvusServiceClient> milvusProvider;
+    private final ObjectProvider<io.milvus.v2.client.MilvusClientV2> milvusV2Provider;
+    private final MilvusProperties milvusProperties;
 
     public ContextExpander(RagProperties ragProperties,
                            KnowledgeProperties knowledgeProperties) {
+        this(ragProperties, knowledgeProperties, null, null, null);
+    }
+
+    public ContextExpander(RagProperties ragProperties,
+                           KnowledgeProperties knowledgeProperties,
+                           ObjectProvider<MilvusServiceClient> milvusProvider,
+                           MilvusProperties milvusProperties) {
+        this(ragProperties, knowledgeProperties, milvusProvider, null, milvusProperties);
+    }
+
+    public ContextExpander(RagProperties ragProperties,
+                           KnowledgeProperties knowledgeProperties,
+                           ObjectProvider<MilvusServiceClient> milvusProvider,
+                           ObjectProvider<io.milvus.v2.client.MilvusClientV2> milvusV2Provider,
+                           MilvusProperties milvusProperties) {
         this.ragProperties = ragProperties;
+        this.milvusProvider = milvusProvider;
+        this.milvusV2Provider = milvusV2Provider;
+        this.milvusProperties = milvusProperties;
     }
 
     /**
-     * 邻块扩展：ES → Milvus 迁移期间直接返回原始命中，不做扩展。
-     * TODO: Milvus Collection 支持 doc_id + chunk_index 标量过滤后恢复邻块 fetch 逻辑。
+     * 邻块扩展：只处理带有稳定文档坐标的知识库命中，记忆和卡片命中保持原样。
      */
     public List<RagRecall.RecallHit> expand(List<RagRecall.RecallHit> hits) {
         RagProperties.ExpandNeighbors cfg = ragProperties.getExpandNeighbors();
         if (hits == null || hits.isEmpty() || !cfg.isEnabled()) {
             return hits == null ? List.of() : hits;
         }
-        log.debug("[ContextExpander] ES 已迁移至 Milvus，邻块扩展暂不可用，直接返回原始命中");
-        return hits;
+        MilvusServiceClient client = milvusProvider == null ? null : milvusProvider.getIfAvailable();
+        if (client == null || milvusProperties == null) {
+            return hits;
+        }
+        int span = Math.max(0, cfg.getNeighborSpan());
+        if (span == 0) {
+            return hits;
+        }
+        Long userId = UserContextHolder.currentUserIdOrNull();
+        String workspaceId = UserContextHolder.currentWorkspaceIdOrNull();
+        if (workspaceId == null || workspaceId.isBlank()) {
+            return hits;
+        }
+        List<RagRecall.RecallHit> out = new java.util.ArrayList<>(hits.size());
+        for (RagRecall.RecallHit hit : hits) {
+            if (!expandable(hit)) {
+                out.add(hit);
+                continue;
+            }
+            boolean publicScope = "公开".equals(hit.effectiveSourceLabel())
+                    || "官方".equals(hit.effectiveSourceLabel());
+            try {
+                List<MilvusKnowledgeChunkSupport.ChunkRow> rows = MilvusKnowledgeChunkSupport.scanDocument(
+                        client,
+                        milvusV2Provider == null ? null : milvusV2Provider.getIfAvailable(),
+                        milvusProperties,
+                        hit.docId(),
+                        workspaceId,
+                        userId,
+                        publicScope,
+                        Math.max(0, hit.chunkIndex() - span),
+                        hit.chunkIndex() + span,
+                        span * 2 + 1,
+                        Math.max(1, span * 2 + 1));
+                List<RagRecall.RecallHit> neighbors = rows.stream()
+                        .map(row -> new RagRecall.RecallHit(
+                                row.id(), row.content(), hit.score(), hit.source(), hit.effectiveSourceLabel(),
+                                row.authority() == null ? hit.authority() : row.authority(),
+                                row.createdAt() == null ? hit.createdAt() : row.createdAt(),
+                                row.docId(), row.chunkIndex(), row.docName()))
+                        .toList();
+                out.add(mergeNeighbors(hit, neighbors));
+            } catch (Exception e) {
+                log.debug("[ContextExpander] 邻块扩展失败 id={}, docId={}: {}", hit.id(), hit.docId(), e.getMessage());
+                out.add(hit);
+            }
+        }
+        return out;
+    }
+
+    private static boolean expandable(RagRecall.RecallHit hit) {
+        if (hit == null || hit.docId() == null || hit.docId().isBlank() || hit.chunkIndex() == null
+                || hit.chunkIndex() < 0) {
+            return false;
+        }
+        String label = hit.effectiveSourceLabel();
+        return !"记忆".equals(label) && !"卡片".equals(label);
     }
 
     /**

@@ -26,6 +26,8 @@ import com.ai.itops.rag.service.MultipartInitResult;
 import com.ai.itops.security.permission.PermissionEvaluator;
 import com.ai.itops.security.permission.WorkspacePermission;
 import lombok.RequiredArgsConstructor;
+
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -59,11 +61,17 @@ public class KnowledgeController {
     private final DocumentMetadataMapper documentMetadataMapper;
     private PermissionEvaluator permissionEvaluator;
 
-    @org.springframework.beans.factory.annotation.Autowired
+    @Autowired
     public void setPermissionEvaluator(PermissionEvaluator permissionEvaluator) {
         this.permissionEvaluator = permissionEvaluator;
     }
 
+    /**
+     * 用户上传文件
+     * @param file
+     * @return
+     * @throws Exception
+     */
     @PostMapping(value = "/api/knowledge/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public KnowledgeUploadResponse uploadUser(@RequestPart("file") MultipartFile file) throws Exception {
         Long uid = UserContextHolder.currentUserIdOrNull();
@@ -81,6 +89,12 @@ public class KnowledgeController {
         }
     }
 
+    /**
+     * 管理员上传文件
+     * @param file
+     * @return
+     * @throws Exception
+     */
     @PostMapping(value = "/api/admin/knowledge/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public KnowledgeUploadResponse uploadAdmin(@RequestPart("file") MultipartFile file) throws Exception {
         Long uid = UserContextHolder.currentUserIdOrNull();
@@ -126,6 +140,16 @@ public class KnowledgeController {
         return new MultipartInitResponse(r.taskId(), r.uploadId(), r.minioPath());
     }
 
+    /**
+     * 分片上传
+     * @param taskId
+     * @param uploadId
+     * @param minioPath
+     * @param partNumber
+     * @param chunk
+     * @return
+     * @throws Exception
+     */
     @PostMapping(value = "/api/knowledge/upload/chunk", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public MultipartPartResponse uploadChunk(
             @RequestParam String taskId,
